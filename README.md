@@ -195,6 +195,62 @@ Hiding the window ends the session, so commit before you hide it.
 | Ctrl+` | Redis / MongoDB console |
 | Ctrl+N | New Redis key |
 
+## MCP server
+
+An AI agent (Claude Code, Codex, any MCP client) can work with your saved connections without the window:
+**SQL** (PostgreSQL, MySQL/MariaDB, SQLite), and **Redis and MongoDB for reading**. The server uses the same saved
+connections and keyring passwords, and no new dependency.
+
+```json
+{"mcpServers": {"omatableplus": {
+  "command": "~/.config/omarchy/plugins/blackcode.omatableplus/tablectl", "args": ["mcp"]}}}
+```
+
+What the agent may do is decided by **you, when you launch the server**, never by the agent:
+
+| `args` | Tier | The agent can |
+|---|---|---|
+| `["mcp"]` | read (27 tools) | browse, query, explain, preview. SQL sessions are read-only, which the database enforces |
+| `["mcp", "--write"]` | write (37 tools) | also insert, update, delete, create and alter tables, import, export, back up |
+| `["mcp", "--destructive"]` | destructive (45 tools) | also drop, truncate, restore, stop processes, change users, delete connections |
+
+| Tool | Tier | What it does |
+|---|---|---|
+| `list_connections`, `list_databases`, `list_objects`, `describe_object`, `search_schema`, `list_relations` | read | what exists, with columns, keys, indexes and foreign keys |
+| `search_rows`, `execute_sql`, `explain_sql`, `recent_queries`, `list_saved_queries` | read | read rows (filters, order, paging, total), run SQL, see the plan and the history |
+| `list_processes`, `list_users`, `get_user_grants` | read | PostgreSQL and MySQL/MariaDB servers |
+| `preview_changes`, `preview_create_table`, `preview_alter_table`, `preview_user_change`, `preview_import` | read | the exact SQL a change would run, without running it |
+| `redis_scan`, `redis_get`, `redis_keyspace`, `mongo_find`, `mongo_count`, `mongo_indexes`, `mongo_aggregate` | read | Redis and MongoDB, reading only |
+| `commit_changes` | write | inserts, updates and deletes by primary key, in one transaction |
+| `create_table`, `alter_table`, `save_query`, `create_database` | write | schema and saved queries; dropping through `alter_table` needs `--destructive` |
+| `import_csv`, `export_data`, `backup_database`, `list_files` | write | files, only in the MCP files folder |
+| `create_connection`, `duplicate_connection` | write | see below |
+| `drop_object`, `truncate_table`, `drop_database`, `restore_database`, `kill_process`, `change_user`, `delete_saved_query`, `delete_connection` | destructive | |
+
+What keeps an agent from doing more than you would at the window:
+
+- **Production and Read-only connections refuse every change**, in every tier. The agent cannot confirm a
+  production write, and `confirmed` is not an argument of any tool. Run it in the window.
+- **`DROP`, `TRUNCATE`, `GRANT`, `REVOKE` and `ALTER … DROP` through `execute_sql`** are refused below
+  `--destructive`. That is a check on the first keyword, not a SQL parser: the rights of the database user remain
+  the real boundary, so give the agent a user that cannot do what you do not want done.
+- **Files** are only named, never pathed: `import_csv`, `export_data`, `backup_database` and `restore_database` take a
+  bare file name inside one folder, `~/Downloads/omatableplus-mcp` (change it with `--files-dir`). Nothing is
+  overwritten and symbolic links are refused. The agent can create a file there only through `export_data` or
+  `backup_database` (an export of a literal `SELECT` is a file of its choosing), never anywhere else: drop the CSV you
+  want imported yourself, and know that `restore_database` runs the SQL of its file, which is why it is destructive.
+  `export_data` runs on a read-only session, so it cannot be used to write to the database.
+- **Passwords never go through the agent.** `create_connection` (PostgreSQL, MySQL/MariaDB only) saves a connection
+  read-only, tagged production and without a password; you complete and relax it in the window. There is no tool to
+  edit a connection, because changing its tag or host would lift the production guard. `change_user` refuses any
+  password field.
+- **Redis and MongoDB cannot be made read-only at the driver**, so the agent only gets tools that cannot write: no
+  raw command, and an aggregation pipeline mentioning `$out` or `$merge` is refused.
+- Rows are capped (50 by default, 200 at most), long cells are cut at 1,000 characters and binary values are shown
+  as `‹binary N bytes›`.
+- Pass `database` when a connection has no default database (`list_databases` shows an empty `database`).
+- Requests are served one at a time, and queries from the agent land in the query history like any other.
+
 ## Install
 
 ```bash
