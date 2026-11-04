@@ -319,8 +319,16 @@ class NosqlTest(Faked):
         self.assertFalse(is_error)
         self.assertEqual(len(self.called("aggregate")), 1)
 
+    def test_mongo_aggregate_only_refuses_the_stages_that_write_not_the_names_that_start_like_them(self):
+        for stage in ("{$project: {m: {$mergeObjects: ['$a', '$b']}}}", "{$match: {kind: '$outcome'}}",
+                      "{$group: {_id: '$out_of_stock', merged: {$sum: '$merge_count'}}}"):
+            is_error, payload = self.client.call("mongo_aggregate", connection="Docs", collection="orders",
+                                                 pipeline=f"[{stage}]")
+            self.assertFalse(is_error, (stage, payload))
+        self.assertEqual(len(self.called("aggregate")), 3)
+
     def test_mongo_aggregate_refuses_a_pipeline_that_writes(self):
-        for stage in ("{$out: 'copy'}", "{$merge: {into: 'copy'}}"):
+        for stage in ("{$out: 'copy'}", "{$merge: {into: 'copy'}}", "{'$out': 'copy'}", '{"$merge" : {into: "copy"}}'):
             is_error, payload = self.client.call("mongo_aggregate", connection="Docs", collection="orders",
                                                  pipeline=f"[{{$match: {{}}}}, {stage}]")
             self.assertTrue(is_error, stage)

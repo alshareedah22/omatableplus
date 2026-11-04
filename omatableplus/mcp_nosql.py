@@ -5,9 +5,12 @@ command, no key or document change, and an aggregation pipeline that mentions $o
 are opened read-only whatever the server mode, which makes the helper refuse any other write.
 """
 
+import re
+
 from .mcpschema import CONNECTION, DATABASE, MAX_ROWS, MONGO_ENGINES, READ, REDIS_ENGINES, page_size, trim
 from .protocol import Error
 
+WRITING_STAGE = re.compile(r"\$(?:out|merge)\b")    # not $mergeObjects, not "$outcome"
 COLLECTION = {"type": "string", "description": "Collection name."}
 TEXT = "text such as {status: 'open'} (relaxed JSON, ObjectId(...) and ISODate(...) understood)"
 
@@ -76,7 +79,7 @@ class NosqlTools:
         return trim(self.methods["mongo.indexes"](session=self.mongo(connection, database), collection=collection))
 
     def tool_mongo_aggregate(self, connection, collection, pipeline, database=None, limit=50):
-        if "$out" in pipeline or "$merge" in pipeline:
+        if WRITING_STAGE.search(pipeline):
             raise Error("invalid", "a pipeline with $out or $merge writes; MCP only reads from MongoDB")
         return trim(self.methods["mongo.aggregate"](session=self.mongo(connection, database), collection=collection,
                                                     pipeline=pipeline, limit=page_size(limit)))
