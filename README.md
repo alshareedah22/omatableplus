@@ -195,6 +195,58 @@ Hiding the window ends the session, so commit before you hide it.
 | Ctrl+` | Redis / MongoDB console |
 | Ctrl+N | New Redis key |
 
+## MCP server
+
+An AI agent (Claude Code, Codex, any MCP client) can work with your saved connections without the window, in **SQL**
+(PostgreSQL, MySQL/MariaDB, SQLite). The server uses the same saved connections and keyring passwords, and no new
+dependency.
+
+```json
+{"mcpServers": {"omatableplus": {
+  "command": "~/.config/omarchy/plugins/blackcode.omatableplus/tablectl", "args": ["mcp"]}}}
+```
+
+What the agent may do is decided by **you, when you launch the server**, never by the agent:
+
+| `args` | Tier | The agent can |
+|---|---|---|
+| `["mcp"]` | read (10 tools) | browse, query, explain, preview. SQL sessions are opened read-only (see the limits below) |
+| `["mcp", "--write"]` | write (11 tools) | also insert, update and delete rows, by SQL or by primary key |
+| `["mcp", "--destructive"]` | destructive (11 tools) | also run SQL that drops, truncates or changes rights |
+
+| Tool | Tier | What it does |
+|---|---|---|
+| `list_connections`, `list_databases`, `list_objects`, `describe_object`, `search_schema` | read | what exists, with columns, keys, indexes and the CREATE statement |
+| `search_rows`, `execute_sql`, `explain_sql`, `recent_queries` | read | read rows (filters, order, paging, total), run SQL, see the plan and the history |
+| `preview_changes` | read | the exact SQL a change would run, without running it |
+| `commit_changes` | write | inserts, updates and deletes by primary key, in one transaction |
+
+`--destructive` adds no tool: it lifts the refusal of `DROP`, `TRUNCATE`, `GRANT`, `REVOKE` and `ALTER … DROP` in
+`execute_sql`.
+
+What keeps an agent from doing more than you would at the window:
+
+- **Production and Read-only connections refuse every change**, in every tier. The agent cannot confirm a production
+  write, and `confirmed` is not an argument of any tool. Run it in the window. A connection you retag or make
+  read-only in the window is picked up by a server that is already running.
+- **`DROP`, `TRUNCATE`, `GRANT`, `REVOKE` and `ALTER … DROP` through `execute_sql`** are refused below
+  `--destructive`, and so are `PREPARE`, `EXECUTE`, `DO` and the SQLite `writable_schema` pragma, which can hide a drop
+  from the first word. That is a check on the first keyword, not a SQL parser: the rights of the database user remain
+  the real boundary (a stored procedure started with `CALL` can drop what its user may drop), so give the agent a user
+  that cannot do what you do not want done.
+- **SQL cannot reach files.** `execute_sql` and `explain_sql` refuse, in every tier, `ATTACH`, `VACUUM INTO`, `COPY`,
+  `LOAD` and `INTO OUTFILE / DUMPFILE`, and the `/*! … */` comments MySQL runs, which would hide them from the check.
+- **Read-only sessions.** SQLite opens the file read-only, which the driver enforces. On PostgreSQL and MySQL/MariaDB
+  read-only is a session setting, so SQL could switch it back: `SET` is refused like any write, and on PostgreSQL so
+  are the calls that do it from a `SELECT` (`set_config`, `query_to_xml`, `ts_stat`, `dblink`). A function of your own
+  that does the same would not be seen: if the agent must not write there, give it a database user without write
+  rights.
+- Rows are capped (50 by default, 200 at most), long cells are cut at 1,000 characters and binary values are shown
+  as `‹binary N bytes›`.
+- Pass `database` when a connection has no default database (`list_databases` shows an empty `database`).
+- Requests are served one at a time, and queries from the agent land in the query history like any other.
+- Redis and MongoDB connections are listed with `supported: false`: the tools of this server do not work with them.
+
 ## Install
 
 ```bash
