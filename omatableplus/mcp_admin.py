@@ -170,6 +170,8 @@ class AdminTools:
                                             changes=changes)
 
     def tool_save_query(self, name, sql):
+        if any(item.get("name") == name.strip() for item in self.methods["query.saved"]()["items"]):
+            raise Error("exists", f"a saved query named {name.strip()!r} already exists; pick another name")
         return {key: shrink(value) for key, value in self.methods["query.save"](name=name, sql=sql).items()}
 
     def tool_import_csv(self, connection, schema, table, file, mapping, database=None, delimiter=",", header=True,

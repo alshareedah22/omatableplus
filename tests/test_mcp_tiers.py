@@ -474,6 +474,14 @@ class WriteToolsTest(Fixture):
         is_error, payload = self.client.call("save_query", name="x", sql="SELECT 1", id=listed["items"][0]["id"])
         self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"))
 
+    def test_saving_under_a_name_already_used_replaces_nothing(self):
+        self.client.call("save_query", name="count notes", sql="SELECT COUNT(*) FROM notes")
+        for name in ("count notes", "  count notes  "):
+            is_error, payload = self.client.call("save_query", name=name, sql="SELECT 'replaced'")
+            self.assertEqual((is_error, payload["error"]["code"]), (True, "exists"), name)
+        _, listed = self.client.call("list_saved_queries")
+        self.assertEqual([(i["name"], i["sql"]) for i in listed["items"]], [("count notes", "SELECT COUNT(*) FROM notes")])
+
     def test_import_csv_inserts_rows_from_a_file_of_the_folder(self):
         self.put("in.csv", "body\nalpha\nbeta\n")
         is_error, payload = self.client.call("import_csv", connection="Notes", schema="main", table="notes",
