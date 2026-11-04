@@ -300,6 +300,12 @@ class NosqlTest(Faked):
         self.client.call("redis_keyspace", connection="Cache", database="1")
         self.assertEqual(self.called("use"), [("use", "1")])
 
+    def test_a_call_without_database_goes_back_to_the_default_one_of_the_connection(self):
+        self.client.call("redis_keyspace", connection="Cache", database="1")
+        self.client.call("redis_keyspace", connection="Cache")
+        self.client.call("redis_keyspace", connection="Cache")
+        self.assertEqual(self.called("use"), [("use", "1"), ("use", "0")])
+
     def test_mongo_tools_read_through_the_adapter(self):
         self.client.call("mongo_find", connection="Docs", collection="orders", filter="{status: 'open'}",
                          sort="{_id: -1}", limit=500, database="shop")
@@ -373,6 +379,33 @@ class SqlGuardTest(Fixture):
             self.assertTrue(is_error, key)
             self.assertEqual(payload["error"]["code"], "destructive", key)
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM pragma_table_info('notes')"), 2)
+
+
+class SessionFollowsTheConnectionTest(Fixture):
+    write = True
+
+    def retag(self, **changes):
+        self.store.save({**self.store.get(self.local["id"], secrets=True), **changes})
+
+    def insert(self):
+        is_error, payload = self.client.call("execute_sql", connection="Notes", sql="INSERT INTO notes (body) VALUES ('x')")
+        return payload["error"]["code"] if is_error else "ok"
+
+    def test_a_session_already_open_obeys_a_connection_that_became_production_or_read_only(self):
+        self.assertEqual(self.insert(), "ok")
+        self.retag(tag="production")
+        self.assertEqual(self.insert(), "confirm")
+        self.retag(tag="local", readonly=True)
+        self.assertEqual(self.insert(), "readonly")
+        self.retag(tag="local", readonly=False)
+        self.assertEqual(self.insert(), "ok")
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 5)
+
+    def test_a_connection_that_did_not_change_keeps_its_session(self):
+        self.client.call("execute_sql", connection="Notes", sql="SELECT 1")
+        first = set(self.helper.sessions.items)
+        self.client.call("execute_sql", connection="Notes", sql="SELECT 2")
+        self.assertEqual(set(self.helper.sessions.items), first)
 
 
 class SqlFileEffectsTest(Fixture):

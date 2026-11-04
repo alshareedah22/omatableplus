@@ -133,6 +133,7 @@ class McpServer(AdminTools, NosqlTools):
         self.files = Sandbox(files or DEFAULT_FILES)
         self.out = out or sys.stdout
         self.open = {}      # (connection id, read-only) -> helper session id
+        self.home = {}      # helper session id -> the database it opened on
         enabled = {READ} | ({WRITE} if self.write else set()) | ({DESTRUCTIVE} if destructive else set())
         self.tools = {name: {"description": description, "inputSchema": schema_of(properties, required)}
                       for name, description, properties, required, tier in TOOLS if tier in enabled}
@@ -177,6 +178,7 @@ class McpServer(AdminTools, NosqlTools):
 
     def close(self):
         self.open.clear()
+        self.home.clear()
         self.helper.sessions.close_all()
 
     def initialize(self, params):
@@ -243,21 +245,39 @@ class McpServer(AdminTools, NosqlTools):
         conn = self.connection(ref, engines)
         key = (conn["id"], readonly)
         sid = self.open.get(key)
+        if sid in self.helper.sessions.items and \
+                self.guards(self.helper.sessions.items[sid].conn) != self.guards(conn, readonly):
+            self.helper.sessions.close(sid)     # the connection was retagged or made read-only since it opened
         if sid not in self.helper.sessions.items:
-            sid = self.methods["session.open"](id=conn["id"], readonly=readonly)["session"]
-            self.open[key] = sid
+            opened = self.methods["session.open"](id=conn["id"], readonly=readonly)
+            sid = self.open[key] = opened["session"]
+            self.home[sid] = opened["database"]
+        self.use_database(sid, database)
+        return sid
+
+    @staticmethod
+    def guards(conn, forced=False):
+        """What decides whether a write is refused: the production tag and the read-only switch."""
+        return conn.get("tag") or "local", bool(conn.get("readonly")) or forced
+
+    def use_database(self, sid, database):
+        """A call that names no database gets the one the session opened on, not the one a previous call chose."""
         if database:
             self.methods["session.use"](session=sid, database=database)
-        return sid
+        elif self.home.get(sid) and self.helper.sessions.items[sid].adapter.database != self.home[sid]:
+            self.methods["session.use"](session=sid, database=self.home[sid])
 
     def drop_sessions(self):
         for sid in self.open.values():
             self.helper.sessions.close(sid)
         self.open.clear()
+        self.home.clear()
 
     def drop_sessions_of(self, conn_id):
         for key in [key for key in self.open if key[0] == conn_id]:
-            self.helper.sessions.close(self.open.pop(key))
+            sid = self.open.pop(key)
+            self.home.pop(sid, None)
+            self.helper.sessions.close(sid)
 
     # tools ------------------------------------------------------------------
     def tool_list_connections(self):
