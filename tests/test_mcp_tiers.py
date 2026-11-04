@@ -362,6 +362,17 @@ class SqlGuardTest(Fixture):
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 3)
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'notes'"), 1)
 
+    def test_write_mode_refuses_the_ways_round_the_first_keyword(self):
+        # each one drops or deletes behind a statement that does not start with DROP
+        for ref, sql in (("Legacy MySQL", "PREPARE s FROM 'DROP TABLE t'"), ("Legacy MySQL", "EXECUTE s"),
+                         ("Legacy MySQL", "SELECT 1; prepare s from 'DROP TABLE t'"),
+                         ("Notes", "DO $$ BEGIN DROP TABLE notes; END $$"),
+                         ("Notes", "PRAGMA writable_schema = 1; DELETE FROM sqlite_master WHERE name = 'notes'"),
+                         ("Notes", "PRAGMA writable_schema(1)")):
+            is_error, payload = self.client.call("execute_sql", connection=ref, sql=sql)
+            self.assertEqual((is_error, payload["error"]["code"]), (True, "destructive"), sql)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'notes'"), 1)
+
     def test_a_refused_batch_runs_none_of_its_statements(self):
         self.client.call("execute_sql", connection="Notes", sql="DELETE FROM notes WHERE id = 1; DROP TABLE big")
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 3)

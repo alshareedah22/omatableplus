@@ -19,7 +19,7 @@ import os
 import signal
 import sys
 
-from . import __version__, sqlsplit
+from . import __version__
 from .mcp_admin import TOOLS as ADMIN_TOOLS
 from .mcp_admin import AdminTools
 from .mcp_nosql import TOOLS as NOSQL_TOOLS
@@ -28,13 +28,12 @@ from .mcpfiles import Sandbox
 from .mcpschema import (CELL_LIMIT, CHANGES, CONNECTION, DATABASE, DEFAULT_ROWS, DESTRUCTIVE, FAMILIES, FILTERS,
                         HISTORY_LIMIT, MATCH_LIMIT, READ, ROWS, SCHEMA, SORT, SQL, SQL_ENGINES, TABLE, WRITE,
                         check, page_size, schema_of, shrink, shrink_rows)
-from .mcpsql import refuse_file_effects
+from .mcpsql import refuse_destructive, refuse_file_effects
 from .protocol import Error, encode
 
 SUPPORTED = ("2024-11-05", "2025-03-26", "2025-06-18")
 LATEST = SUPPORTED[-1]
 DEFAULT_FILES = os.path.join(os.path.expanduser("~"), "Downloads", "omatableplus-mcp")
-DESTRUCTIVE_SQL = {"DROP", "TRUNCATE", "GRANT", "REVOKE"}
 
 HINTS = {
     "confirm": ("This connection is tagged production and MCP cannot confirm a write. Run the change in the "
@@ -326,18 +325,9 @@ class McpServer(AdminTools, NosqlTools):
         engine = self.connection(connection)["engine"]
         refuse_file_effects(sql, engine)
         if self.write and not self.destructive:
-            self.refuse_destructive_sql(sql, engine)
+            refuse_destructive(sql, engine)
         out = self.methods["query.run"](session=self.session(connection, database), text=sql)
         return {"database": out["database"], "results": [self.result(r, page_size(max_rows)) for r in out["results"]]}
-
-    @staticmethod
-    def refuse_destructive_sql(sql, engine):
-        """A first-keyword check, not a parser: the database user's rights remain the real boundary."""
-        for _, _, statement in sqlsplit.split(sql, engine):
-            words = sqlsplit.words(statement, engine)
-            first = words[0] if words else ""
-            if first in DESTRUCTIVE_SQL or (first == "ALTER" and "DROP" in words):
-                raise Error("destructive", f"{first} is refused without --destructive")
 
     @staticmethod
     def result(raw, cap):

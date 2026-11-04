@@ -13,6 +13,8 @@ from .protocol import Error
 FILE_STATEMENTS = {"ATTACH", "COPY", "LOAD"}      # SQLite ATTACH opens or creates a file; COPY, LOAD DATA read or write one
 FILE_CLAUSES = {"OUTFILE", "DUMPFILE"}            # SELECT ... INTO OUTFILE
 READS = {"SELECT", "WITH", "VALUES", "TABLE"}
+DESTRUCTIVE = {"DROP", "TRUNCATE", "GRANT", "REVOKE"}
+OPAQUE = {"PREPARE", "EXECUTE", "DO"}              # run text or code this check cannot read: PREPARE ... FROM 'DROP ...'
 RUNS_COMMENT = re.compile(r"/\*M?!")
 
 
@@ -49,3 +51,15 @@ def refuse_unless_read(sql, engine):
     first, _ = statements(found[0][2], engine)[0]
     if first not in READS or safety.sql_writes([found[0][2]], engine):
         raise Error("invalid", "export_data only runs a query that reads (SELECT, WITH or VALUES)")
+
+
+def refuse_destructive(sql, engine):
+    """Without --destructive: no drop, truncate or change of rights, and nothing that hides one."""
+    for first, words in statements(sql, engine):
+        if first in DESTRUCTIVE or (first == "ALTER" and "DROP" in words):
+            raise Error("destructive", f"{first} is refused without --destructive")
+        # SQLite: with writable_schema on, a plain DELETE on sqlite_master drops tables
+        if first in OPAQUE or "WRITABLE_SCHEMA" in words:
+            what = "WRITABLE_SCHEMA" if "WRITABLE_SCHEMA" in words else first
+            raise Error("destructive", f"{what} can change or run what this server cannot check; "
+                                       "it is refused without --destructive")
