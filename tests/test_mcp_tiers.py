@@ -375,6 +375,65 @@ class SqlGuardTest(Fixture):
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM pragma_table_info('notes')"), 2)
 
 
+class SqlFileEffectsTest(Fixture):
+    """Raw SQL must not reach files outside the MCP files folder, whatever the tier or the connection."""
+
+    def setUp(self):
+        super().setUp()
+        self.outside = os.path.join(self.tmp.name, "outside")
+        os.makedirs(self.outside)
+        self.tiers = [Client(self.helper, files=self.files, **flags) for flags in ({}, {"write": True}, {"destructive": True})]
+
+    def tearDown(self):
+        for client in self.tiers:
+            client.server.close()
+        super().tearDown()
+
+    def refused(self, sql, code, connection="Notes", tools=("execute_sql", "explain_sql")):
+        for client in self.tiers:
+            for tool in tools:
+                is_error, payload = client.call(tool, connection=connection, sql=sql)
+                self.assertEqual((is_error, payload["error"]["code"]), (True, code), (tool, sql))
+
+    def test_sql_cannot_create_or_open_a_file_outside_the_folder(self):
+        for sql in (f"VACUUM INTO '{self.outside}/v.db'", f"vacuum main into '{self.outside}/m.db'",
+                    f"ATTACH DATABASE '{self.path}' AS other", f"/* x */ ATTACH '{self.outside}/a.db' AS a",
+                    f"SELECT 1; VACUUM INTO '{self.outside}/s.db'", "COPY notes TO '/tmp/x'",
+                    "COPY notes FROM PROGRAM 'id'", "LOAD DATA INFILE '/etc/passwd' INTO TABLE notes"):
+            self.refused(sql, "files")
+        self.assertEqual(os.listdir(self.outside), [])
+
+    def test_mysql_file_clauses_and_comments_that_run_are_refused_before_any_connection(self):
+        for sql, code in (("SELECT * FROM t INTO OUTFILE '/tmp/x'", "files"), ("SELECT 1 INTO DUMPFILE '/tmp/x'", "files"),
+                          ("SELECT 1 /*!50000 INTO OUTFILE '/tmp/x' */", "invalid"),
+                          ("SELECT 1 /*M!100000 INTO OUTFILE '/tmp/x' */", "invalid")):
+            self.refused(sql, code, connection="Legacy MySQL")
+
+    def test_words_that_only_look_like_those_statements_still_run(self):
+        write = self.tiers[1]
+        for sql in ("SELECT 'VACUUM INTO x, ATTACH, COPY, OUTFILE' AS words", "SELECT 1 /* ATTACH */", "VACUUM"):
+            self.assertFalse(write.call("execute_sql", connection="Notes", sql=sql)[0], sql)
+
+    def test_export_runs_one_query_that_reads_and_nothing_else(self):
+        write = self.tiers[1]
+        for sql in (f"VACUUM INTO '{self.outside}/e.db'", "DELETE FROM notes", "SELECT 1; SELECT 2",
+                    "PRAGMA user_version(9)", "CREATE TABLE t (x)", "WITH d AS (DELETE FROM notes RETURNING id) SELECT * FROM d",
+                    "SELECT * FROM notes INTO OUTFILE '/tmp/x'"):
+            for ref in ("Notes", "Prod", "Frozen"):
+                is_error, payload = write.call("export_data", connection=ref, sql=sql, format="csv", file="x.csv")
+                self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"), (ref, sql))
+        self.assertEqual((os.listdir(self.outside), self.scalar("SELECT COUNT(*) FROM notes"),
+                          self.scalar("PRAGMA user_version")), ([], 3, 0))
+        self.assertFalse(os.path.exists(os.path.join(self.files, "x.csv")))
+
+    def test_export_still_takes_selects_with_and_values(self):
+        write = self.tiers[1]
+        for n, sql in enumerate(("SELECT body FROM notes", "WITH x AS (SELECT 1 AS n) SELECT n FROM x", "VALUES (1), (2)",
+                                 "  -- all\nselect * from notes;")):
+            is_error, payload = write.call("export_data", connection="Prod", sql=sql, format="json", file=f"ok{n}.json")
+            self.assertFalse(is_error, (sql, payload))
+
+
 class WriteToolsTest(Fixture):
     write = True
 

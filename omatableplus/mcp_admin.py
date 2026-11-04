@@ -9,6 +9,7 @@ Files are only ever named inside the MCP files folder, see mcpfiles.
 
 from .mcpschema import (CONNECTION, DATABASE, DESTRUCTIVE, FILE, FILTERS, READ, SCHEMA, SERVER_ENGINES, SORT, SQL,
                         TABLE, WRITE, shrink, trim)
+from .mcpsql import refuse_unless_read
 from .protocol import Error
 
 SPEC = {"type": "object", "description": "Fields of the change. Passwords are not accepted here: set them in the "
@@ -62,8 +63,8 @@ TOOLS = (
       "header": {"type": "boolean", "description": "The first line is a header to skip (default true)."},
       "empty_null": {"type": "boolean", "description": "Empty cells become NULL (default true)."}},
      ("connection", "schema", "table", "file", "mapping"), WRITE),
-    ("export_data", "Write a table, or the result of one query, to a new file of the MCP files folder. Reads only, "
-     "and never overwrites.",
+    ("export_data", "Write a table, or the result of one query, to a new file of the MCP files folder. The query "
+     "must be one SELECT, WITH or VALUES; never overwrites.",
      {"connection": CONNECTION, "database": DATABASE, "file": FILE,
       "format": {"type": "string", "description": "csv, json or sql."},
       "sql": {"type": "string", "description": "One query to export. Or give schema and table."},
@@ -178,17 +179,18 @@ class AdminTools:
 
     def tool_export_data(self, connection, file, format, database=None, sql=None, schema=None, table=None,  # noqa: A002
                          filters=None, sort=None, match="and", table_name=None):
-        target = self.export_target(sql, schema, table, filters, sort, match)
+        target = self.export_target(sql, schema, table, filters, sort, match, self.connection(connection)["engine"])
         path = self.files.new(file)
         out = self.methods["export.run"](session=self.session(connection, database, readonly=True), target=target,
                                          format=format, path=path, overwrite=False, table_name=table_name)
         return {"file": file, "rows": out["rows"], "bytes": out["bytes"]}
 
     @staticmethod
-    def export_target(sql, schema, table, filters, sort, match):
+    def export_target(sql, schema, table, filters, sort, match, engine):
         if sql is not None and (schema or table):
             raise Error("invalid", "give a query or a table to export, not both")
         if sql is not None:
+            refuse_unless_read(sql, engine)
             return {"sql": sql}
         if not (schema and table):
             raise Error("invalid", "give a query (sql) or a table (schema and table) to export")

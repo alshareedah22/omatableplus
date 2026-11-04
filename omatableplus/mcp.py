@@ -28,6 +28,7 @@ from .mcpfiles import Sandbox
 from .mcpschema import (CELL_LIMIT, CHANGES, CONNECTION, DATABASE, DEFAULT_ROWS, DESTRUCTIVE, FAMILIES, FILTERS,
                         HISTORY_LIMIT, MATCH_LIMIT, READ, ROWS, SCHEMA, SORT, SQL, SQL_ENGINES, TABLE, WRITE,
                         check, page_size, schema_of, shrink, shrink_rows)
+from .mcpsql import refuse_file_effects
 from .protocol import Error, encode
 
 SUPPORTED = ("2024-11-05", "2025-03-26", "2025-06-18")
@@ -82,7 +83,8 @@ SQL_TOOLS = (
       "limit": ROWS, "offset": {"type": "integer", "description": "Rows to skip."}},
      ("connection", "schema", "table"), READ),
     ("execute_sql", "Run SQL. Rows are capped and long cells shortened; `truncated` says when rows were cut. "
-     "Writes only run in write mode, on connections that are not read-only or production.",
+     "Writes only run in write mode, on connections that are not read-only or production. SQL that opens or "
+     "creates files (ATTACH, VACUUM INTO, COPY, INTO OUTFILE) is refused: export_data and backup_database do that.",
      {"connection": CONNECTION, "database": DATABASE, "sql": SQL, "max_rows": ROWS}, ("connection", "sql"), READ),
     ("explain_sql", "Show the execution plan of one statement; analyze=true runs it (reads only).",
      {"connection": CONNECTION, "database": DATABASE, "sql": SQL,
@@ -301,8 +303,10 @@ class McpServer(AdminTools, NosqlTools):
                 "key": page["key"], "matched": matched, "truncated": matched > offset + len(page["rows"])}
 
     def tool_execute_sql(self, connection, sql, database=None, max_rows=DEFAULT_ROWS):
+        engine = self.connection(connection)["engine"]
+        refuse_file_effects(sql, engine)
         if self.write and not self.destructive:
-            self.refuse_destructive_sql(sql, self.connection(connection)["engine"])
+            self.refuse_destructive_sql(sql, engine)
         out = self.methods["query.run"](session=self.session(connection, database), text=sql)
         return {"database": out["database"], "results": [self.result(r, page_size(max_rows)) for r in out["results"]]}
 
@@ -328,6 +332,7 @@ class McpServer(AdminTools, NosqlTools):
         return item
 
     def tool_explain_sql(self, connection, sql, database=None, analyze=False):
+        refuse_file_effects(sql, self.connection(connection)["engine"])
         out = self.methods["query.explain"](session=self.session(connection, database), text=sql, analyze=analyze)
         return {k: v for k, v in out.items() if k != "range"}
 
