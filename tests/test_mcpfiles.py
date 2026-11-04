@@ -62,6 +62,43 @@ class SandboxTest(unittest.TestCase):
         os.symlink(self.tmp.name, os.path.join(self.root, "up"))
         self.assertEqual(self.code(self.box.new, "up/x.csv"), "invalid")
 
+    def written(self, name, content=b"dump"):
+        with open(self.box.new(name), "wb") as f:
+            f.write(content)
+
+    def test_a_file_is_vouched_for_by_name_and_by_content(self):
+        self.written("app.bak")
+        self.assertEqual(self.code(self.box.vouched, "app.bak"), "invalid")
+        self.box.vouch("app.bak")
+        self.assertTrue(self.box.vouched("app.bak").endswith("app.bak"))
+        with open(os.path.join(self.root, "app.bak"), "ab") as f:
+            f.write(b"; \\! touch /tmp/pwned")
+        self.assertEqual(self.code(self.box.vouched, "app.bak"), "invalid")
+
+    def test_a_vouched_name_cannot_be_reused_for_other_content_nor_found_by_another_name(self):
+        self.written("a.bak")
+        self.written("b.bak")
+        self.box.vouch("a.bak")
+        self.assertEqual(self.code(self.box.vouched, "b.bak"), "invalid")
+        self.assertEqual(self.code(self.box.new, "a.bak"), "exists")
+
+    def test_vouching_needs_a_file_and_keeps_the_record_out_of_reach(self):
+        self.assertEqual(self.code(self.box.vouch, "nope.bak"), "notfound")
+        self.assertEqual(self.code(self.box.vouched, "nope.bak"), "notfound")
+        self.written("a.bak")
+        self.box.vouch("a.bak")
+        self.assertEqual(self.box.listing(), [{"name": "a.bak", "bytes": 4}])
+        for name in (".backups.json", "../files/.backups.json"):
+            self.assertEqual(self.code(self.box.existing, name), "invalid", name)
+            self.assertEqual(self.code(self.box.new, name), "invalid", name)
+
+    def test_a_damaged_record_vouches_for_nothing(self):
+        self.written("a.bak")
+        self.box.vouch("a.bak")
+        with open(os.path.join(self.root, ".backups.json"), "w") as f:
+            f.write("{nope")
+        self.assertEqual(self.code(self.box.vouched, "a.bak"), "invalid")
+
     def test_listing_shows_visible_regular_files_with_their_size(self):
         self.assertEqual(self.box.listing(), [])
         self.box.new("seed.csv")

@@ -100,7 +100,8 @@ TOOLS = (
     ("drop_database", "Drop a database and everything in it.",
      {"connection": CONNECTION, "name": {"type": "string", "description": "Database to drop."}},
      ("connection", "name"), DESTRUCTIVE),
-    ("restore_database", "Load a file of the MCP files folder (see backup_database) into the database.",
+    ("restore_database", "Load a file that backup_database wrote in the MCP files folder, and nobody changed since, "
+     "into the database. Any other file is refused: restore it in the OmaTablePlus window.",
      {"connection": CONNECTION, "database": DATABASE, "file": FILE}, ("connection", "file"), DESTRUCTIVE),
     ("kill_process", "Stop the query of a process, or with hard=true close its connection.",
      {"connection": CONNECTION, "process_id": PROCESS,
@@ -200,6 +201,7 @@ class AdminTools:
         path = self.files.new(file)
         out = self.methods["db.backup"](session=self.session(connection, database, readonly=True), path=path,
                                         overwrite=False)
+        self.files.vouch(file)
         return {"file": file, "bytes": out["bytes"], "ms": out["ms"], "database": out["database"]}
 
     def tool_create_database(self, connection, name):
@@ -232,7 +234,7 @@ class AdminTools:
         return self.methods["db.drop"](session=self.session(connection), name=name)
 
     def tool_restore_database(self, connection, file, database=None):
-        return self.methods["db.restore"](session=self.session(connection, database), path=self.files.existing(file))
+        return self.methods["db.restore"](session=self.session(connection, database), path=self.files.vouched(file))
 
     def tool_kill_process(self, connection, process_id, hard=False):
         return self.methods["server.kill"](session=self.session(connection), id=process_id, hard=hard)

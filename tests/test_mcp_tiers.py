@@ -570,8 +570,9 @@ class WriteToolsTest(Fixture):
     def test_nothing_is_written_outside_the_folder(self):
         self.client.call("export_data", connection="Notes", schema="main", table="notes", format="csv", file="a.csv")
         self.client.call("backup_database", connection="Notes", file="a.bak")
-        leftovers = [n for n in os.listdir(self.files) if n.startswith(".")]
-        self.assertEqual((sorted(os.listdir(self.files)), leftovers), (["a.bak", "a.csv"], []))
+        leftovers = [n for n in os.listdir(self.files) if n.startswith(".") and n != ".backups.json"]
+        self.assertEqual((sorted(n for n in os.listdir(self.files) if n != ".backups.json"), leftovers),
+                         (["a.bak", "a.csv"], []))
 
 
 class DestructiveToolsTest(Fixture):
@@ -616,6 +617,28 @@ class DestructiveToolsTest(Fixture):
         self.assertEqual((is_error, payload["error"]["code"]), (True, "unsupported"))
         self.assertEqual(self.client.call("restore_database", connection="Notes", file="nope.bak")[1]["error"]["code"],
                          "notfound")
+
+    def test_restore_only_loads_what_backup_database_wrote(self):
+        # a file the model shaped itself would run with the server's rights: psql executes `\! command`,
+        # and an export puts a column alias of the model's choosing in the first line of a CSV
+        loaded = []
+        spy = lambda **kwargs: loaded.append(os.path.basename(kwargs["path"])) or {"ms": 0, "database": "main"}  # noqa: E731
+        self.assertFalse(self.client.call("backup_database", connection="Notes", file="app.bak")[0])
+        self.assertFalse(self.client.call("export_data", connection="Notes", format="csv", file="evil.sql",
+                                          sql='SELECT 1 AS "a \\! touch /tmp/pwned"')[0])
+        with open(os.path.join(self.files, "by-hand.sql"), "w") as f:
+            f.write("SELECT 1;")
+        with mock.patch.dict(self.helper.methods, {"db.restore": spy}):
+            for name in ("evil.sql", "by-hand.sql"):
+                is_error, payload = self.client.call("restore_database", connection="Notes", file=name)
+                self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"), name)
+                self.assertIn("backup_database", payload["error"]["message"])
+            self.assertFalse(self.client.call("restore_database", connection="Notes", file="app.bak")[0])
+            with open(os.path.join(self.files, "app.bak"), "ab") as f:
+                f.write(b"\n\\! touch /tmp/pwned\n")
+            self.assertEqual(self.client.call("restore_database", connection="Notes", file="app.bak")[1]["error"]["code"],
+                             "invalid")
+        self.assertEqual(loaded, ["app.bak"])
 
     def test_restore_cannot_read_outside_the_folder(self):
         is_error, payload = self.client.call("restore_database", connection="Notes", file="../app.db")
