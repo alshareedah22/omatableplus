@@ -650,10 +650,16 @@ class DestructiveToolsTest(Fixture):
         self.assertEqual(self.client.call("list_saved_queries")[1]["items"], [])
 
     def test_delete_connection_closes_its_sessions_and_forgets_it(self):
-        self.client.call("execute_sql", connection="Frozen", sql="SELECT 1")
-        self.assertFalse(self.client.call("delete_connection", connection="Frozen")[0])
-        self.assertNotIn(self.frozen["id"], [c["id"] for c in self.store.list()])
+        self.client.call("execute_sql", connection="Notes", sql="SELECT 1")
+        self.assertFalse(self.client.call("delete_connection", connection="Notes")[0])
+        self.assertNotIn(self.local["id"], [c["id"] for c in self.store.list()])
         self.assertEqual(self.helper.sessions.items, {})
+
+    def test_a_production_or_read_only_connection_is_not_deleted_like_it_is_not_changed(self):
+        for ref, code in (("Prod", "confirm"), ("Frozen", "readonly")):
+            is_error, payload = self.client.call("delete_connection", connection=ref)
+            self.assertEqual((is_error, payload["error"]["code"]), (True, code), ref)
+        self.assertTrue({self.prod["id"], self.frozen["id"]} <= {c["id"] for c in self.store.list()})
 
     def test_copy_and_delete_leave_omadb_servers_alone(self):
         server = {"id": "omadb:fake", "name": "Fake", "engine": "mysql", "host": "127.0.0.1", "port": 3306}

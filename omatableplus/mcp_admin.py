@@ -112,7 +112,8 @@ TOOLS = (
     ("delete_saved_query", "Delete a saved query.",
      {"query_id": {"type": "string", "description": "Id, as listed by list_saved_queries."}}, ("query_id",),
      DESTRUCTIVE),
-    ("delete_connection", "Delete a saved connection and its stored secrets.", {"connection": CONNECTION},
+    ("delete_connection", "Delete a saved connection and its stored secrets. Read-only and production connections "
+     "are refused.", {"connection": CONNECTION},
      ("connection",), DESTRUCTIVE),
 )
 
@@ -246,12 +247,22 @@ class AdminTools:
         return self.methods["query.delete_saved"](id=query_id)
 
     def tool_delete_connection(self, connection):
-        conn_id = self.saved_connection(connection)["id"]
-        self.drop_sessions_of(conn_id)
-        self.helper.sessions.store.delete(conn_id)
+        conn = self.saved_connection(connection)
+        self.refuse_protected(conn)
+        self.drop_sessions_of(conn["id"])
+        self.helper.sessions.store.delete(conn["id"])
         return {"ok": True}
 
     # guards -------------------------------------------------------------------
+    @staticmethod
+    def refuse_protected(conn):
+        """The helper has no method that gates a connection's own removal, so this does what ask() does."""
+        name = conn.get("name") or "This connection"
+        if conn.get("readonly"):
+            raise Error("readonly", f"{name} is read-only, so MCP does not delete it. Delete it in the OmaTablePlus window.")
+        if conn.get("tag") == "production":
+            raise Error("confirm", f"{name} is tagged production and MCP cannot confirm its deletion.")
+
     @staticmethod
     def without_secret(spec):
         """A password given to a model would sit in its context and in the history of the conversation."""
