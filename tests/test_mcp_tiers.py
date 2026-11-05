@@ -16,7 +16,8 @@ from mcpkit import Client, Fixture
 from omatableplus import omadb
 from omatableplus import session as session_module
 from omatableplus import sqlgen
-from omatableplus.mcp import McpServer
+from omatableplus.mcp import DEFAULT_FILES, McpServer
+from omatableplus.mcp import main as mcp_main
 from omatableplus.mcpschema import CELL_LIMIT, MAX_ROWS
 
 READ_TOOLS = {"list_relations", "list_saved_queries", "list_processes", "list_users", "get_user_grants",
@@ -299,6 +300,14 @@ class NosqlTest(Faked):
         self.assertTrue(payload["value"].startswith("v" * CELL_LIMIT))
         self.assertLess(len(payload["value"]), CELL_LIMIT + 50)
 
+    def test_a_long_list_is_cut_and_says_how_many_items_it_lost(self):
+        keys = [{"key": f"k{n}", "type": "string", "ttl": -1} for n in range(MAX_ROWS + 50)]
+        with mock.patch.object(FakeRedis, "scan", lambda self, *args: {"keys": keys, "cursor": "0"}):
+            _, payload = self.client.call("redis_scan", connection="Cache")
+        self.assertEqual(len(payload["keys"]), MAX_ROWS + 1)
+        self.assertEqual(payload["keys"][MAX_ROWS - 1]["key"], f"k{MAX_ROWS - 1}")
+        self.assertEqual(payload["keys"][-1], "…[+50 items]")
+
     def test_the_database_argument_switches_the_redis_database(self):
         self.client.call("redis_keyspace", connection="Cache", database="1")
         self.assertEqual(self.called("use"), [("use", "1")])
@@ -315,6 +324,10 @@ class NosqlTest(Faked):
         self.assertEqual(self.called("find"), [("find", "orders", "{status: 'open'}", "{_id: -1}", "", 0, MAX_ROWS)])
         self.assertEqual(self.client.call("mongo_count", connection="Docs", collection="orders")[1]["count"], 3)
         self.assertEqual(self.client.call("mongo_indexes", connection="Docs", collection="orders")[1]["indexes"][0]["name"], "_id_")
+
+    def test_mongo_find_never_starts_before_the_first_document(self):
+        self.client.call("mongo_find", connection="Docs", collection="orders", skip=-5)
+        self.assertEqual(self.called("find")[0][5], 0)
 
     def test_mongo_aggregate_runs_a_pipeline_that_reads(self):
         is_error, _ = self.client.call("mongo_aggregate", connection="Docs", collection="orders",
@@ -357,6 +370,25 @@ class NosqlTest(Faked):
         family = {c["name"]: c["family"] for c in payload["connections"]}
         self.assertEqual((family["Notes"], family["Cache"], family["Docs"]), ("sql", "redis", "mongodb"))
         self.assertTrue(all(c["supported"] for c in payload["connections"]))
+
+
+class LaunchTest(unittest.TestCase):
+    """What `python -m omatableplus.mcp` hands to the server."""
+
+    def launch(self, *argv):
+        with mock.patch("omatableplus.mcp.McpServer") as server, mock.patch("omatableplus.__main__.build"), \
+                mock.patch("omatableplus.store.Store"), mock.patch("omatableplus.mcp.signal"), \
+                mock.patch.object(sys, "stdin"), mock.patch.object(sys, "stdout", io.StringIO()):
+            mcp_main(list(argv))
+        return server.call_args.kwargs
+
+    def test_files_dir_reaches_the_server_and_defaults_to_the_downloads_folder(self):
+        self.assertEqual(self.launch("--files-dir", "/somewhere/else")["files"], "/somewhere/else")
+        self.assertEqual(self.launch()["files"], DEFAULT_FILES)
+
+    def test_the_tier_flags_reach_the_server(self):
+        self.assertEqual({k: v for k, v in self.launch("--destructive").items() if k != "out"},
+                         {"write": False, "destructive": True, "files": DEFAULT_FILES})
 
 
 class SqlGuardTest(Fixture):
@@ -566,6 +598,15 @@ class WriteToolsTest(Fixture):
         self.assertEqual(payload["inserted"], 2)
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 5)
 
+    def test_import_csv_turns_empty_cells_into_null_unless_told_not_to(self):
+        self.put("null.csv", "id,body\n10,\n")
+        self.put("empty.csv", "id,body\n20,\n")
+        args = {"connection": "Notes", "schema": "main", "table": "notes", "mapping": ["id", "body"]}
+        self.assertFalse(self.client.call("import_csv", file="null.csv", **args)[0])
+        self.assertFalse(self.client.call("import_csv", file="empty.csv", empty_null=False, **args)[0])
+        self.assertEqual(self.scalar("SELECT body IS NULL FROM notes WHERE id = 10"), 1)
+        self.assertEqual(self.scalar("SELECT body IS NULL FROM notes WHERE id = 20"), 0)
+
     def test_import_csv_is_refused_on_production_and_cannot_leave_the_folder(self):
         self.put("in.csv", "body\nalpha\n")
         is_error, payload = self.client.call("import_csv", connection="Prod", schema="main", table="notes",
@@ -604,6 +645,12 @@ class WriteToolsTest(Fixture):
         self.client.call("execute_sql", connection="Notes", sql="SELECT 1")
         self.assertFalse(self.client.call("export_data", connection="Notes", sql="SELECT 1 AS n", format="csv",
                                           file="s.csv")[0])
+        self.assertEqual(sorted(bool(s.conn.get("readonly")) for s in self.helper.sessions.items.values()),
+                         [False, True])
+
+    def test_backup_reads_on_a_read_only_session_even_when_the_connection_also_has_a_writable_one(self):
+        self.client.call("execute_sql", connection="Notes", sql="SELECT 1")
+        self.assertFalse(self.client.call("backup_database", connection="Notes", file="s.bak")[0])
         self.assertEqual(sorted(bool(s.conn.get("readonly")) for s in self.helper.sessions.items.values()),
                          [False, True])
 
@@ -660,6 +707,19 @@ class WriteToolsTest(Fixture):
             is_error, payload = self.client.call("create_connection", name="N", engine="mysql", host="h", **extra)
             self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"), extra)
         self.assertEqual([c["name"] for c in self.store.list() if c["name"] in ("File", "N")], [])
+
+    def test_a_host_is_known_whatever_the_case_the_saved_connection_wrote_it_in(self):
+        self.store.save({"name": "Shouting", "engine": "postgresql", "host": "Db.Example.COM", "tag": "local"})
+        is_error, payload = self.client.call("create_connection", name="Quiet", engine="postgresql",
+                                             host="db.example.com")
+        self.assertFalse(is_error, payload)
+
+    def test_two_saved_connections_with_the_same_name_are_not_copied_by_name(self):
+        twin = self.store.save({"name": "NOTES", "engine": "sqlite", "path": self.path, "tag": "local"})
+        is_error, payload = self.client.call("duplicate_connection", connection="notes")
+        self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"))
+        self.assertIn("2 connections", payload["error"]["message"])
+        self.assertFalse(self.client.call("duplicate_connection", connection=twin["id"])[0])
 
     def test_duplicate_connection_keeps_the_guards_of_the_source(self):
         is_error, payload = self.client.call("duplicate_connection", connection="Prod")
