@@ -597,6 +597,13 @@ class WriteToolsTest(Fixture):
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 3)
         self.assertFalse(os.path.exists(os.path.join(self.files, "w.csv")))
 
+    def test_export_reads_on_a_read_only_session_even_when_the_connection_also_has_a_writable_one(self):
+        self.client.call("execute_sql", connection="Notes", sql="SELECT 1")
+        self.assertFalse(self.client.call("export_data", connection="Notes", sql="SELECT 1 AS n", format="csv",
+                                          file="s.csv")[0])
+        self.assertEqual(sorted(bool(s.conn.get("readonly")) for s in self.helper.sessions.items.values()),
+                         [False, True])
+
     def test_export_needs_exactly_one_source_and_a_known_format(self):
         base = {"connection": "Notes", "file": "x.csv", "format": "csv"}
         for extra in ({}, {"sql": "SELECT 1", "table": "notes", "schema": "main"}, {"table": "notes"}):
