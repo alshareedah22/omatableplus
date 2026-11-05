@@ -7,6 +7,8 @@ production tag refuse exactly what they refuse in the window; MCP never confirms
 Files are only ever named inside the MCP files folder, see mcpfiles.
 """
 
+import ipaddress
+
 from .mcpschema import (CONNECTION, DATABASE, DESTRUCTIVE, FILE, FILTERS, READ, SCHEMA, SERVER_ENGINES, SORT, SQL,
                         TABLE, WRITE, shrink, trim)
 from .mcpsql import refuse_unless_read
@@ -77,8 +79,9 @@ TOOLS = (
     ("create_database", "Create a database (PostgreSQL, MySQL/MariaDB).",
      {"connection": CONNECTION, "name": {"type": "string", "description": "New database name."}},
      ("connection", "name"), WRITE),
-    ("create_connection", "Save a connection to a PostgreSQL or MySQL/MariaDB server. It is created read-only and "
-     "tagged production, without a password: a person completes and relaxes it in the window.",
+    ("create_connection", "Save a connection to a PostgreSQL or MySQL/MariaDB server, for this machine or a host "
+     "that a saved connection already uses. It is created read-only and tagged production, without a password: "
+     "a person completes and relaxes it in the window.",
      {"name": {"type": "string"}, "engine": {"type": "string", "description": "postgresql, mysql or mariadb."},
       "host": {"type": "string"}, "port": {"type": "integer"}, "user": {"type": "string"},
       "database": {"type": "string"}, "folder": {"type": "string"},
@@ -213,6 +216,8 @@ class AdminTools:
     def tool_create_connection(self, name, engine, host, port=None, user="", database="", folder="", tls="prefer"):
         if engine not in SERVER_ENGINES:
             raise Error("invalid", f"engine must be one of {', '.join(SERVER_ENGINES)}")
+        host = host.strip()
+        self.refuse_unknown_host(host)
         saved = self.helper.sessions.store.save({
             "name": name, "engine": engine, "host": host, "port": port, "user": user, "database": database,
             "folder": folder, "tls": tls, "tag": "production", "readonly": True})
@@ -256,6 +261,21 @@ class AdminTools:
         return {"ok": True}
 
     # guards -------------------------------------------------------------------
+    def refuse_unknown_host(self, host):
+        """A connection without a password gets one from ~/.pgpass or PGPASSWORD, for whatever host it names."""
+        known = {str(conn.get("host") or "").lower() for conn in self.helper.sessions.store.list()}
+        if host.lower() in known or self.loopback(host):
+            return
+        raise Error("invalid", f"{host} is neither this machine nor the host of a saved connection; the person adds "
+                               "a connection to a new server in the OmaTablePlus window")
+
+    @staticmethod
+    def loopback(host):
+        try:
+            return host.lower() == "localhost" or ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
     @staticmethod
     def refuse_protected(conn):
         """The helper has no method that gates a connection's own removal, so this does what ask() does."""
