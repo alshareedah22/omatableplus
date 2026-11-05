@@ -17,14 +17,22 @@ Item {
 
   readonly property bool valid: /^#[0-9a-fA-F]{6}$/.test(value)
   readonly property color shown: valid ? value : fallback
+  readonly property string current: (valid ? value : fallback).toLowerCase()
 
   // working colour while the popup is open
   property real hue: 0
   property real sat: 0
   property real val: 0
 
-  // a colour typed into the hex field moves the square and the hue bar too
-  onValueChanged: if (valid && toHex(Qt.hsva(hue, sat, val, 1)) !== value.toLowerCase()) take(shown)
+  // a colour typed into the hex field moves the square and the hue bar too;
+  // clearing it goes back to the fallback
+  // (worked out from `value` here: the valid/shown bindings may not have updated yet)
+  onValueChanged: {
+    const ok = /^#[0-9a-fA-F]{6}$/.test(value)
+    if (!ok && value !== "") return
+    const target = (ok ? value : fallback).toLowerCase()
+    if (toHex(Qt.hsva(hue, sat, val, 1)) !== target) take(Qt.color(target))
+  }
 
   implicitWidth: 32
   implicitHeight: 32
@@ -54,7 +62,12 @@ Item {
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
-      onClicked: picker.opened ? picker.close() : picker.open()
+      onClicked: {
+        if (picker.opened) { picker.close(); return }
+        // focus the input the picker belongs to, so typing goes there
+        if (picker.anchorItem !== picker) picker.anchorItem.forceActiveFocus()
+        picker.open()
+      }
     }
   }
 
@@ -81,8 +94,8 @@ Item {
             required property string modelData
             width: 22; height: 22; radius: 4
             color: modelData
-            border.width: modelData.toLowerCase() === picker.value.toLowerCase() || presetArea.containsMouse ? 2 : 1
-            border.color: modelData.toLowerCase() === picker.value.toLowerCase() ? Commons.Color.foreground
+            border.width: modelData.toLowerCase() === picker.current || presetArea.containsMouse ? 2 : 1
+            border.color: modelData.toLowerCase() === picker.current ? Commons.Color.foreground
               : presetArea.containsMouse ? Commons.Color.accent : Qt.darker(modelData, 1.4)
             MouseArea {
               id: presetArea
