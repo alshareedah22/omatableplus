@@ -461,6 +461,27 @@ class SqlFileEffectsTest(Fixture):
                           ("SELECT 1 /*M!100000 INTO OUTFILE '/tmp/x' */", "invalid")):
             self.refused(sql, code, connection="Legacy MySQL")
 
+    def test_postgresql_calls_that_lift_the_read_only_session_are_refused_before_any_connection(self):
+        # verified on a real server: each of these, called from a SELECT, turns default_transaction_read_only off
+        # for the session, after which a function that writes (nextval, your own) runs
+        self.store.save({"name": "Legacy PG", "engine": "postgresql", "host": "db.example", "tag": "local"})
+        for sql in ("SELECT set_config('default_transaction_read_only', 'off', false)",
+                    "SELECT pg_catalog.set_config('transaction_read_only', 'off', false)",
+                    "SELECT query_to_xml('SELECT 1', true, true, '')",
+                    "SELECT query_to_xml_and_xmlschema('SELECT 1', true, true, '')",
+                    "SELECT query_to_xmlschema('SELECT 1', true, true, '')",
+                    "SELECT cursor_to_xml('c', 1, true, true, '')",
+                    "SELECT * FROM ts_stat('SELECT 1::tsvector')",
+                    "SELECT dblink_exec('dbname=x', 'DELETE FROM notes')", "SELECT 1; SELECT SET_CONFIG('a', 'b', false)"):
+            self.refused(sql, "invalid", connection="Legacy PG", tools=("execute_sql", "explain_sql"))
+            is_error, payload = self.tiers[1].call("export_data", connection="Legacy PG", sql=sql, format="csv", file="x.csv")
+            self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"), sql)
+
+    def test_those_names_stay_harmless_elsewhere_and_as_plain_text(self):
+        write = self.tiers[1]
+        for sql in ("SELECT 'set_config query_to_xml ts_stat' AS words", "SELECT 1 AS set_config_note"):
+            self.assertFalse(write.call("execute_sql", connection="Notes", sql=sql)[0], sql)
+
     def test_words_that_only_look_like_those_statements_still_run(self):
         write = self.tiers[1]
         for sql in ("SELECT 'VACUUM INTO x, ATTACH, COPY, OUTFILE' AS words", "SELECT 1 /* ATTACH */", "VACUUM"):

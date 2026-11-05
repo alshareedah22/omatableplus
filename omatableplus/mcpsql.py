@@ -16,6 +16,10 @@ READS = {"SELECT", "WITH", "VALUES", "TABLE"}
 DESTRUCTIVE = {"DROP", "TRUNCATE", "GRANT", "REVOKE"}
 OPAQUE = {"PREPARE", "EXECUTE", "DO"}              # run text or code this check cannot read: PREPARE ... FROM 'DROP ...'
 RUNS_COMMENT = re.compile(r"/\*M?!")
+# PostgreSQL: called from a SELECT, these change session settings or run SQL text, so they can turn the
+# read-only default of the session off (checked on a real server); dblink runs SQL on another connection
+LIFT_READ_ONLY = {"SET_CONFIG", "QUERY_TO_XML", "QUERY_TO_XML_AND_XMLSCHEMA", "QUERY_TO_XMLSCHEMA", "CURSOR_TO_XML",
+                  "TS_STAT"}
 
 
 def statements(sql, engine):
@@ -42,9 +46,21 @@ def refuse_file_effects(sql, engine):
                                  "use export_data, backup_database or import_csv, which stay inside it")
 
 
+def refuse_session_escapes(sql, engine):
+    """The helper's gate reads these statements as reads, so only the read-only session stood in the way."""
+    if engine != "postgresql":
+        return
+    for _, words in statements(sql, engine):
+        for word in words:
+            if word in LIFT_READ_ONLY or word.startswith("DBLINK"):
+                raise Error("invalid", f"{word.lower()} can change the session settings or run SQL text, which would "
+                                       "lift the read-only session; MCP refuses it")
+
+
 def refuse_unless_read(sql, engine):
     """One statement that reads, for export_data: its session is read-only only as far as the driver goes."""
     refuse_hidden_code(sql, engine)
+    refuse_session_escapes(sql, engine)
     found = sqlsplit.split(sql, engine)
     if len(found) != 1:
         raise Error("invalid", "give exactly one query to export")

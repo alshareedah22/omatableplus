@@ -28,7 +28,7 @@ from .mcpfiles import Sandbox
 from .mcpschema import (CELL_LIMIT, CHANGES, CONNECTION, DATABASE, DEFAULT_ROWS, DESTRUCTIVE, FAMILIES, FILTERS,
                         HISTORY_LIMIT, MATCH_LIMIT, READ, ROWS, SCHEMA, SORT, SQL, SQL_ENGINES, TABLE, WRITE,
                         check, page_size, schema_of, shrink, shrink_rows)
-from .mcpsql import refuse_destructive, refuse_file_effects
+from .mcpsql import refuse_destructive, refuse_file_effects, refuse_session_escapes
 from .protocol import Error, encode
 
 SUPPORTED = ("2024-11-05", "2025-03-26", "2025-06-18")
@@ -328,6 +328,7 @@ class McpServer(AdminTools, NosqlTools):
     def tool_execute_sql(self, connection, sql, database=None, max_rows=DEFAULT_ROWS):
         engine = self.connection(connection)["engine"]
         refuse_file_effects(sql, engine)
+        refuse_session_escapes(sql, engine)
         if self.write and not self.destructive:
             refuse_destructive(sql, engine)
         out = self.methods["query.run"](session=self.session(connection, database), text=sql)
@@ -346,7 +347,9 @@ class McpServer(AdminTools, NosqlTools):
         return item
 
     def tool_explain_sql(self, connection, sql, database=None, analyze=False):
-        refuse_file_effects(sql, self.connection(connection)["engine"])
+        engine = self.connection(connection)["engine"]
+        refuse_file_effects(sql, engine)
+        refuse_session_escapes(sql, engine)
         out = self.methods["query.explain"](session=self.session(connection, database), text=sql, analyze=analyze)
         return {k: v for k, v in out.items() if k != "range"}
 

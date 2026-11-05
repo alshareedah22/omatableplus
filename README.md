@@ -254,8 +254,10 @@ What keeps an agent from doing more than you would at the window:
   guard. `change_user` refuses any password field.
 - **`save_query` saves under a new name** and never replaces a saved query.
 - **Read-only sessions.** SQLite opens the file read-only, which the driver enforces. On PostgreSQL and MySQL/MariaDB
-  read-only is a session setting that the SQL of the session can switch back (`SET`, `set_config`): if the agent must
-  not write there, give it a database user without write rights. This was not tried against real servers.
+  read-only is a session setting, so SQL could switch it back: `SET` is refused like any write, and on PostgreSQL so
+  are the calls that do it from a `SELECT` (`set_config`, `query_to_xml`, `ts_stat`, `dblink`; tried on a real
+  server). A function of your own that does the same would not be seen: if the agent must not write there, give it a
+  database user without write rights.
 - **Redis and MongoDB cannot be made read-only at the driver**, so the agent only gets tools that cannot write: no
   raw command, and an aggregation pipeline with the `$out` or `$merge` stage is refused.
 - Rows are capped (50 by default, 200 at most), long cells are cut at 1,000 characters and binary values are shown
