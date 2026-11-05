@@ -200,8 +200,7 @@ class ReadTest(Fixture):
         for conn in payload["connections"]:
             self.assertEqual(set(conn) - {"id", "name", "engine", "tag", "readonly", "host", "port", "database",
                                           "folder", "supported", "family"}, set())
-        self.assertEqual({c["name"]: (c["family"], c["supported"]) for c in payload["connections"]}["Cache"],
-                         (None, False))
+        self.assertEqual({c["name"]: c["family"] for c in payload["connections"]}["Cache"], "redis")
 
     def test_a_connection_is_found_by_id_or_by_name(self):
         for ref in (self.local["id"], "notes"):

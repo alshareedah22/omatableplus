@@ -6,7 +6,10 @@ from .protocol import Error
 
 READ, WRITE, DESTRUCTIVE = "read", "write", "destructive"     # a tool's tier, see McpServer
 SQL_ENGINES = ("postgresql", "mysql", "mariadb", "sqlite")
-FAMILIES = dict.fromkeys(SQL_ENGINES, "sql")
+REDIS_ENGINES = ("redis", "valkey")
+MONGO_ENGINES = ("mongodb",)
+FAMILIES = {**dict.fromkeys(SQL_ENGINES, "sql"), **dict.fromkeys(REDIS_ENGINES, "redis"),
+            **dict.fromkeys(MONGO_ENGINES, "mongodb")}
 
 DEFAULT_ROWS = 50
 MAX_ROWS = 200
@@ -98,6 +101,16 @@ def shrink(value):
 
 def shrink_rows(rows):
     return [[shrink(cell) for cell in row] for row in rows]
+
+
+def trim(value):
+    """`shrink` for a payload of any shape: long text cut, bytes hidden, long lists cut with a marker."""
+    if isinstance(value, dict):
+        return {key: trim(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        kept = [trim(item) for item in value[:MAX_ROWS]]
+        return kept + [f"…[+{len(value) - MAX_ROWS} items]"] if len(value) > MAX_ROWS else kept
+    return shrink(value)
 
 
 def page_size(limit):

@@ -9,6 +9,7 @@ Rules that keep a model from doing more than a person at the window could:
   * three tiers chosen at launch, never by the model: read (default), --write, --destructive (implies --write);
   * without --write every SQL session is opened read-only, which the database driver enforces;
   * SQL that drops, truncates or changes rights needs --destructive, and SQL that reaches files is always refused.
+  * Redis and MongoDB are read only.
 
 Requests are served one at a time.
 """
@@ -19,6 +20,8 @@ import signal
 import sys
 
 from . import __version__
+from .mcp_nosql import TOOLS as NOSQL_TOOLS
+from .mcp_nosql import NosqlTools
 from .mcpschema import (CELL_LIMIT, CHANGES, CONNECTION, DATABASE, DEFAULT_ROWS, DESTRUCTIVE, FAMILIES, FILTERS,
                         HISTORY_LIMIT, MATCH_LIMIT, READ, ROWS, SCHEMA, SORT, SQL, SQL_ENGINES, TABLE, WRITE,
                         check, page_size, schema_of, shrink, shrink_rows)
@@ -34,11 +37,11 @@ HINTS = {
     "destructive": "Start the MCP server with --destructive to allow dropping, truncating and changing rights.",
 }
 READ_ONLY_HINT = "The MCP server was started without --write, so every session is read-only."
-ENGINES_SAID = "SQL (PostgreSQL, MySQL/MariaDB, SQLite)"
+ENGINES_SAID = "SQL (PostgreSQL, MySQL/MariaDB, SQLite), plus Redis and MongoDB for reading"
 INSTRUCTIONS = {
     READ: (f"OmaTablePlus databases: {ENGINES_SAID}. This server is read-only: SQL sessions are opened read-only and "
            "writes are refused. Start with list_connections, then list_objects, describe_object or "
-           "search_schema, then search_rows or execute_sql."),
+           "search_schema, then search_rows or execute_sql; redis_* and mongo_* tools read Redis and MongoDB."),
     WRITE: (f"OmaTablePlus databases: {ENGINES_SAID}. This server is in write mode: SQL writes run on connections "
             "that are neither read-only nor tagged production; production writes are refused. Start with "
             "list_connections. To edit rows prefer preview_changes then commit_changes (parameterised, by primary "
@@ -52,7 +55,7 @@ INSTRUCTIONS = {
 # name, description, properties, required, tier
 SQL_TOOLS = (
     ("list_connections", "List the saved connections and OmaDBngin servers (id, name, engine, family, tag, "
-     "read-only). family says which tools fit: sql.", {}, (), READ),
+     "read-only). family says which tools fit: sql, redis (redis_*) or mongodb (mongo_*).", {}, (), READ),
     ("list_databases", "List the databases of a connection and the current one.",
      {"connection": CONNECTION}, ("connection",), READ),
     ("list_objects", "List tables and views per schema.",
@@ -95,7 +98,7 @@ SQL_TOOLS = (
      ("connection", "schema", "table"), WRITE),
 )
 
-TOOLS = SQL_TOOLS
+TOOLS = SQL_TOOLS + NOSQL_TOOLS
 
 
 def failure(error, write):
@@ -116,7 +119,7 @@ class RpcError(Exception):
         self.message = message
 
 
-class McpServer:
+class McpServer(NosqlTools):
     def __init__(self, helper, write=False, destructive=False, out=None):
         self.helper = helper
         self.methods = helper.methods
@@ -211,7 +214,7 @@ class McpServer:
         return {"content": [{"type": "text", "text": text}], "isError": failed}
 
     # connections and sessions -----------------------------------------------
-    def connection(self, ref):
+    def connection(self, ref, engines=SQL_ENGINES):
         saved = self.helper.sessions.store.list()
         found = self.matching(saved, ref)
         if not found:
@@ -220,9 +223,9 @@ class McpServer:
             raise Error("notfound", f"no connection {ref!r}; call list_connections")
         if len(found) > 1:
             raise Error("invalid", f"{len(found)} connections are named {ref!r}; use the id")
-        if found[0].get("engine") not in SQL_ENGINES:
+        if found[0].get("engine") not in engines:
             raise Error("unsupported", f"{found[0].get('engine')} connections do not fit this tool "
-                                       f"(it works with {', '.join(SQL_ENGINES)}); list_connections gives each family")
+                                       f"(it works with {', '.join(engines)}); list_connections gives each family")
         return found[0]
 
     @staticmethod
@@ -230,9 +233,10 @@ class McpServer:
         by_id = [c for c in connections if c["id"] == ref]
         return by_id or [c for c in connections if str(c.get("name", "")).lower() == ref.lower()]
 
-    def session(self, ref, database=None):
-        readonly = not self.write
-        conn = self.connection(ref)
+    def session(self, ref, database=None, engines=SQL_ENGINES, readonly=None):
+        """readonly=True asks for a session the driver keeps read-only whatever the mode (NoSQL)."""
+        readonly = not self.write if readonly is None else readonly
+        conn = self.connection(ref, engines)
         key = (conn["id"], readonly)
         sid = self.open.get(key)
         if sid in self.helper.sessions.items and \
