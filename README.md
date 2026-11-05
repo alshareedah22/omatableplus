@@ -244,9 +244,13 @@ What keeps an agent from doing more than you would at the window:
   overwritten and symbolic links are refused. The agent can create a file there only through `export_data` or
   `backup_database`, never anywhere else (an export of a literal `SELECT` is a file of its choosing): drop the CSV you
   want imported yourself. `export_data` takes one `SELECT`, `WITH` or `VALUES`, on a read-only session, so it cannot
-  be used to write to the database. `restore_database` only loads a file that `backup_database` wrote and nobody
-  changed since (its sha256 is kept in `.backups.json` of that folder): `psql` and `mysql` run `\!` and `system`
-  lines as shell commands, and the file of an export is shaped by the agent. Restore any other dump in the window.
+  be used to write to the database. `restore_database` loads at once a file that `backup_database` wrote and nobody
+  changed since (its sha256 is kept in `.backups.json` of that folder). Any other file is shown to you first, through
+  MCP elicitation: its size, its first lines, and the lines `psql` and `mysql` would run as shell commands (`\!`,
+  `system`, `source`), because the file of an export is shaped by the agent. You tick "Restore this file" or the
+  restore does not happen; a decline, a dismissal, or a file that changes meanwhile loads nothing. A client without
+  elicitation (declared at `initialize`, protocol 2025-06-18 or later) gets the file refused: restore it in the window.
+  Production and read-only connections are refused before any question.
 - **Passwords never go through the agent.** `create_connection` (PostgreSQL, MySQL/MariaDB only) saves a connection
   read-only, tagged production and without a password, for `localhost` or a host a saved connection already uses
   (libpq would otherwise fill the password from `~/.pgpass` or `PGPASSWORD` for any host); you complete and relax it

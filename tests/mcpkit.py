@@ -23,11 +23,25 @@ class Client:
         self.helper = helper
         self.seen = 0
         self.next_id = 0
+        self.asked = []     # the params of every elicitation/create the server sent
 
     def replies(self):
         lines = self.out.getvalue().splitlines()[self.seen:]
         self.seen += len(lines)
-        return [json.loads(line) for line in lines]
+        messages = [json.loads(line) for line in lines]
+        self.asked.extend(m["params"] for m in messages if "method" in m)
+        return [m for m in messages if "method" not in m]
+
+    def person(self, *answers):
+        """The next elicitation requests are answered, in turn, like a person at the client would."""
+        def inbox():
+            for answer in answers:
+                request = json.loads(self.out.getvalue().splitlines()[-1])
+                yield json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": answer})
+        self.server.inbox = inbox()
+
+    def can_elicit(self, version="2025-06-18"):
+        self.send("initialize", {"protocolVersion": version, "capabilities": {"elicitation": {}}})
 
     def raw(self, line):
         self.server.handle(line)

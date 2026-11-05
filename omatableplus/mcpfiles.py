@@ -7,11 +7,18 @@ let it write or read anywhere with the user's rights. Here a tool names a bare f
 import hashlib
 import json
 import os
+import re
 import tempfile
 
 from .protocol import Error
 
 RECORD = ".backups.json"     # name -> sha256 of every file backup_database wrote; a name tool arguments cannot reach
+HEAD_LINES = 6
+LINE_CUT = 100
+COMMAND_LINES = 5
+# What the psql and mysql clients run as a shell command or a script when they meet it at the start of a line.
+# `\connect`, `\restrict`, `\N` (a NULL in COPY data) and a lone `\.` (end of COPY data) are in every pg_dump.
+RUNS_COMMANDS = re.compile(r"^\s*(?:\\(?!(?:connect|restrict|unrestrict)\b|N(?:\t|$)|\.\s*$)|system\s|source\s)", re.I)
 
 
 def digest(path):
@@ -20,6 +27,24 @@ def digest(path):
         for chunk in iter(lambda: f.read(1 << 20), b""):
             sha.update(chunk)
     return sha.hexdigest()
+
+
+def glance(path):
+    """What a person needs to decide on a file: its size, its first lines, and the lines a client would run."""
+    head, commands, lines = [], [], 0
+    with open(path, "rb") as f:
+        for raw in iter(lambda: f.readline(4096), b""):
+            line = raw.decode("utf-8", "replace").rstrip("\r\n")
+            lines += 1
+            if lines <= HEAD_LINES:
+                head.append(line[:LINE_CUT])
+            if RUNS_COMMANDS.match(line) and len(commands) < COMMAND_LINES:
+                commands.append(line[:LINE_CUT])
+    text = [f"{os.path.basename(path)}: {os.path.getsize(path)} bytes, {lines} lines", "First lines:"]
+    text += [f"  {line}" for line in head]
+    if commands:
+        text += ["Lines the psql and mysql clients run as commands:"] + [f"  {line}" for line in commands]
+    return "\n".join(text)
 
 
 class Sandbox:
@@ -55,12 +80,16 @@ class Sandbox:
             json.dump(known, f)
         os.replace(tmp, os.path.join(os.path.dirname(path), RECORD))
 
+    def vouches(self, path):
+        return self.vouched_for().get(os.path.basename(path)) == digest(path)
+
     def vouched(self, name):
         """The path of a file that backup_database wrote and nobody changed since."""
         path = self.existing(name)
-        if self.vouched_for().get(os.path.basename(path)) != digest(path):
+        if not self.vouches(path):
             raise Error("invalid", f"{os.path.basename(path)} was not written by backup_database, or changed since; "
-                                   "restore_database only loads those. Restore any other file in the OmaTablePlus window")
+                                   "restore_database only loads those unless your client can ask you first. "
+                                   "Restore any other file in the OmaTablePlus window")
         return path
 
     def vouched_for(self):

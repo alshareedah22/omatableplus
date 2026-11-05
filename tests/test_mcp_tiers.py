@@ -1,5 +1,7 @@
 """The MCP tools beyond SQL browsing, by tier: read (default), --write, --destructive."""
 import csv
+import io
+import json
 import os
 import sqlite3
 import sys
@@ -14,6 +16,7 @@ from mcpkit import Client, Fixture
 from omatableplus import omadb
 from omatableplus import session as session_module
 from omatableplus import sqlgen
+from omatableplus.mcp import McpServer
 from omatableplus.mcpschema import CELL_LIMIT, MAX_ROWS
 
 READ_TOOLS = {"list_relations", "list_saved_queries", "list_processes", "list_users", "get_user_grants",
@@ -768,6 +771,123 @@ class DestructiveToolsTest(Fixture):
                 is_error, payload = self.client.call(tool, connection="Fake")
                 self.assertEqual((is_error, payload["error"]["code"]), (True, "notfound"), tool)
                 self.assertIn("saved connection", payload["error"]["message"], tool)
+
+
+class RestoreConfirmationTest(Fixture):
+    """A file backup_database did not write is loaded only when the person at the client says so."""
+    write = True
+    destructive = True
+
+    def setUp(self):
+        super().setUp()
+        self.loaded = []
+        spy = lambda **kwargs: self.loaded.append(os.path.basename(kwargs["path"])) or {"ms": 0}  # noqa: E731
+        patch = mock.patch.dict(self.helper.methods, {"db.restore": spy})
+        patch.start()
+        self.addCleanup(patch.stop)
+        os.makedirs(self.files, exist_ok=True)
+        with open(os.path.join(self.files, "by-hand.sql"), "w") as f:
+            f.write("SELECT 1;\n\\! touch /tmp/pwned\n")
+
+    def restore(self, connection="Notes", file="by-hand.sql"):
+        is_error, payload = self.client.call("restore_database", connection=connection, file=file)
+        return is_error, payload.get("error", {}).get("code")
+
+    def test_the_person_is_shown_the_file_and_where_it_goes_then_says_yes(self):
+        self.client.can_elicit()
+        self.client.person({"action": "accept", "content": {"restore": True}})
+        self.assertEqual(self.restore(), (False, None))
+        self.assertEqual(self.loaded, ["by-hand.sql"])
+        [asked] = self.client.asked
+        for shown in ("by-hand.sql", "Notes", "local", "\\! touch /tmp/pwned", "not written by backup_database"):
+            self.assertIn(shown, asked["message"])
+        self.assertEqual(asked["requestedSchema"]["properties"]["restore"]["type"], "boolean")
+        self.assertEqual(asked["requestedSchema"]["required"], ["restore"])
+
+    def test_anything_but_a_yes_loads_nothing(self):
+        self.client.can_elicit()
+        for answer in ({"action": "decline"}, {"action": "cancel"}, {"action": "accept"},
+                       {"action": "accept", "content": {}}, {"action": "accept", "content": {"restore": False}},
+                       {"action": "accept", "content": {"restore": "yes"}}, {"action": "nonsense"}, "text",
+                       {"action": "decline", "content": {"restore": True}},
+                       {"action": "cancel", "content": {"restore": True}}):
+            self.client.person(answer)
+            self.assertEqual(self.restore(), (True, "declined"), answer)
+        self.assertEqual(self.loaded, [])
+
+    def test_an_answer_that_is_an_error_or_never_comes_loads_nothing(self):
+        self.client.can_elicit()
+        self.client.server.inbox = iter([json.dumps({"jsonrpc": "2.0", "id": "omatableplus-1",
+                                                     "error": {"code": -32601, "message": "no"}})])
+        self.assertEqual(self.restore(), (True, "declined"))
+        self.client.server.inbox = iter(())
+        self.assertEqual(self.restore(), (True, "declined"))
+        self.assertEqual(self.loaded, [])
+
+    def test_an_answer_to_another_request_is_not_the_answer(self):
+        self.client.can_elicit()
+        stray = json.dumps({"jsonrpc": "2.0", "id": "other", "result": {"action": "accept", "content": {"restore": True}}})
+        self.client.server.inbox = iter([stray])
+        self.assertEqual(self.restore(), (True, "declined"))
+        self.assertEqual(self.loaded, [])
+
+    def test_other_messages_arriving_meanwhile_are_served_after_the_answer(self):
+        self.client.can_elicit()
+        ping = json.dumps({"jsonrpc": "2.0", "id": 99, "method": "ping"})
+        self.client.person({"action": "accept", "content": {"restore": True}})
+        answers = self.client.server.inbox
+        self.client.server.inbox = (line for source in ([ping], answers) for line in source)
+        self.assertEqual(self.restore(), (False, None))
+        self.assertEqual(list(self.client.server.waiting), [ping])
+
+    def test_without_the_elicitation_capability_the_file_is_refused_as_before(self):
+        self.assertEqual(self.restore(), (True, "invalid"))
+        for version, capabilities in (("2025-03-26", {"elicitation": {}}), ("2025-06-18", {}),
+                                      ("2025-06-18", {"elicitation": True}), ("2025-06-18", "elicitation")):
+            self.client.send("initialize", {"protocolVersion": version, "capabilities": capabilities})
+            self.assertEqual(self.restore(), (True, "invalid"), (version, capabilities))
+        self.assertEqual((self.client.asked, self.loaded), ([], []))
+
+    def test_a_file_backup_database_wrote_needs_no_question(self):
+        self.client.can_elicit()
+        self.client.call("backup_database", connection="Notes", file="app.bak")
+        self.assertEqual(self.restore(file="app.bak"), (False, None))
+        self.assertEqual((self.client.asked, self.loaded), ([], ["app.bak"]))
+
+    def test_a_connection_that_would_refuse_the_restore_is_not_asked_about(self):
+        self.client.can_elicit()
+        self.assertEqual(self.restore("Prod"), (True, "confirm"))
+        self.assertEqual(self.restore("Frozen"), (True, "readonly"))
+        self.assertEqual((self.client.asked, self.loaded), ([], []))
+
+    def test_a_file_that_changes_after_the_question_is_not_loaded(self):
+        self.client.can_elicit()
+        self.client.person({"action": "accept", "content": {"restore": True}})
+        answers = self.client.server.inbox
+
+        def swapped():
+            with open(os.path.join(self.files, "by-hand.sql"), "a") as f:
+                f.write("\\! id\n")
+            yield next(answers)
+        self.client.server.inbox = swapped()
+        self.assertEqual(self.restore(), (True, "declined"))
+        self.assertEqual(self.loaded, [])
+
+    def test_serve_reads_the_answer_from_the_same_input(self):
+        out = io.StringIO()
+        server = McpServer(self.helper, write=True, destructive=True, files=self.files, out=out)
+        lines = [json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                             "params": {"protocolVersion": "2025-06-18", "capabilities": {"elicitation": {}}}}),
+                 json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                             "params": {"name": "restore_database",
+                                        "arguments": {"connection": "Notes", "file": "by-hand.sql"}}}),
+                 json.dumps({"jsonrpc": "2.0", "id": "omatableplus-1",
+                             "result": {"action": "accept", "content": {"restore": True}}}),
+                 json.dumps({"jsonrpc": "2.0", "id": 3, "method": "ping"})]
+        server.serve(iter(lines))
+        sent = [json.loads(line) for line in out.getvalue().splitlines()]
+        self.assertEqual([m.get("method") or m["id"] for m in sent], [1, "elicitation/create", 2, 3])
+        self.assertEqual(self.loaded, ["by-hand.sql"])
 
 
 class ServerAdminTest(Faked):

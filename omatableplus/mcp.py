@@ -14,6 +14,7 @@ Requests are served one at a time.
 """
 
 import argparse
+import collections
 import json
 import os
 import signal
@@ -33,6 +34,7 @@ from .protocol import Error, encode
 
 SUPPORTED = ("2024-11-05", "2025-03-26", "2025-06-18")
 LATEST = SUPPORTED[-1]
+ELICITATION_SINCE = "2025-06-18"
 DEFAULT_FILES = os.path.join(os.path.expanduser("~"), "Downloads", "omatableplus-mcp")
 
 HINTS = {
@@ -133,6 +135,10 @@ class McpServer(AdminTools, NosqlTools):
         self.out = out or sys.stdout
         self.open = {}      # (connection id, read-only) -> helper session id
         self.home = {}      # helper session id -> the database it opened on
+        self.inbox = iter(())       # the client's messages; serve() points it at stdin
+        self.waiting = collections.deque()      # lines that arrived while a question to the person was open
+        self.elicits = False        # did the client say it can put a question to a person?
+        self.questions = 0
         enabled = {READ} | ({WRITE} if self.write else set()) | ({DESTRUCTIVE} if destructive else set())
         self.tools = {name: {"description": description, "inputSchema": schema_of(properties, required)}
                       for name, description, properties, required, tier in TOOLS if tier in enabled}
@@ -172,12 +178,35 @@ class McpServer(AdminTools, NosqlTools):
             self.send({"id": rid, "result": result})
 
     def serve(self, inp=None):
+        self.inbox = iter(inp or sys.stdin)
         try:
-            for line in inp or sys.stdin:
+            while True:
+                line = self.waiting.popleft() if self.waiting else next(self.inbox, None)
+                if line is None:
+                    break
                 if line.strip():
                     self.handle(line)
         finally:
             self.close()
+
+    def ask_person(self, message, schema):
+        """Put a question to the person at the client (MCP elicitation) and wait for the answer: the result of
+        the reply, or a cancel when the client answers with an error or closes its input. Other messages that
+        arrive meanwhile wait their turn."""
+        self.questions += 1
+        rid = f"omatableplus-{self.questions}"
+        self.send({"id": rid, "method": "elicitation/create", "params": {"message": message, "requestedSchema": schema}})
+        for line in self.inbox:
+            try:
+                reply = json.loads(line)
+            except ValueError:
+                reply = None
+            if not isinstance(reply, dict) or reply.get("id") != rid or "method" in reply:
+                self.waiting.append(line)
+                continue
+            result = reply.get("result")
+            return result if isinstance(result, dict) else {"action": "cancel"}
+        return {"action": "cancel"}
 
     def close(self):
         self.open.clear()
@@ -186,7 +215,11 @@ class McpServer(AdminTools, NosqlTools):
 
     def initialize(self, params):
         wanted = params.get("protocolVersion")
-        return {"protocolVersion": wanted if wanted in SUPPORTED else LATEST, "capabilities": {"tools": {}},
+        version = wanted if wanted in SUPPORTED else LATEST
+        capabilities = params.get("capabilities")
+        self.elicits = version >= ELICITATION_SINCE and isinstance(capabilities, dict) \
+            and isinstance(capabilities.get("elicitation"), dict)
+        return {"protocolVersion": version, "capabilities": {"tools": {}},
                 "serverInfo": {"name": "omatableplus", "version": __version__}, "instructions": INSTRUCTIONS[self.tier()]}
 
     def tier(self):

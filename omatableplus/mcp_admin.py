@@ -8,7 +8,9 @@ Files are only ever named inside the MCP files folder, see mcpfiles.
 """
 
 import ipaddress
+import os
 
+from .mcpfiles import digest, glance
 from .mcpschema import (CONNECTION, DATABASE, DESTRUCTIVE, FILE, FILTERS, READ, SCHEMA, SERVER_ENGINES, SORT, SQL,
                         TABLE, WRITE, shrink, trim)
 from .mcpsql import refuse_unless_read
@@ -103,8 +105,9 @@ TOOLS = (
     ("drop_database", "Drop a database and everything in it.",
      {"connection": CONNECTION, "name": {"type": "string", "description": "Database to drop."}},
      ("connection", "name"), DESTRUCTIVE),
-    ("restore_database", "Load a file that backup_database wrote in the MCP files folder, and nobody changed since, "
-     "into the database. Any other file is refused: restore it in the OmaTablePlus window.",
+    ("restore_database", "Load a file of the MCP files folder into the database. A file that backup_database wrote, "
+     "and nobody changed since, is loaded at once. Any other file is shown to the person at the client, who must "
+     "agree first; a client that cannot ask refuses it, and it is then restored in the OmaTablePlus window.",
      {"connection": CONNECTION, "database": DATABASE, "file": FILE}, ("connection", "file"), DESTRUCTIVE),
     ("kill_process", "Stop the query of a process, or with hard=true close its connection.",
      {"connection": CONNECTION, "process_id": PROCESS,
@@ -242,7 +245,31 @@ class AdminTools:
         return self.methods["db.drop"](session=self.session(connection), name=name)
 
     def tool_restore_database(self, connection, file, database=None):
-        return self.methods["db.restore"](session=self.session(connection, database), path=self.files.vouched(file))
+        session = self.session(connection, database)
+        return self.methods["db.restore"](session=session, path=self.restorable(connection, file, database))
+
+    def restorable(self, connection, file, database):
+        """backup_database's own files are loaded as they are; any other one only after the person says yes."""
+        if not self.elicits:
+            return self.files.vouched(file)
+        path = self.files.existing(file)
+        if self.files.vouches(path):
+            return path
+        conn = self.connection(connection)
+        self.refuse_protected(conn, "restoring into")
+        seen = digest(path)
+        asked = self.ask_person(
+            f"Restore {os.path.basename(path)} into {database or 'the default database'} of {conn['name']!r} "
+            f"({conn.get('tag') or 'local'})? It was not written by backup_database, or changed since, so a model "
+            f"may have shaped it.\n{glance(path)}",
+            {"type": "object", "required": ["restore"], "properties": {
+                "restore": {"type": "boolean", "title": "Restore this file", "default": False}}})
+        content = asked.get("content")
+        if asked.get("action") != "accept" or not isinstance(content, dict) or content.get("restore") is not True:
+            raise Error("declined", f"the person at the client did not agree to load {os.path.basename(path)}")
+        if digest(path) != seen:
+            raise Error("declined", f"{os.path.basename(path)} changed while the person was asked, so it was not loaded")
+        return path
 
     def tool_kill_process(self, connection, process_id, hard=False):
         return self.methods["server.kill"](session=self.session(connection), id=process_id, hard=hard)
@@ -277,13 +304,13 @@ class AdminTools:
             return False
 
     @staticmethod
-    def refuse_protected(conn):
+    def refuse_protected(conn, doing="deleting"):
         """The helper has no method that gates a connection's own removal, so this does what ask() does."""
         name = conn.get("name") or "This connection"
         if conn.get("readonly"):
-            raise Error("readonly", f"{name} is read-only, so MCP does not delete it. Delete it in the OmaTablePlus window.")
+            raise Error("readonly", f"{name} is read-only, so MCP does not allow {doing} it. Do it in the OmaTablePlus window.")
         if conn.get("tag") == "production":
-            raise Error("confirm", f"{name} is tagged production and MCP cannot confirm its deletion.")
+            raise Error("confirm", f"{name} is tagged production and MCP cannot confirm {doing} it.")
 
     @staticmethod
     def without_secret(spec):

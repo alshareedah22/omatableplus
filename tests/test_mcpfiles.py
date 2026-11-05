@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from omatableplus.mcpfiles import Sandbox
+from omatableplus.mcpfiles import Sandbox, glance
 from omatableplus.protocol import Error
 
 
@@ -102,6 +102,24 @@ class SandboxTest(unittest.TestCase):
         with open(os.path.join(self.root, ".backups.json"), "w") as f:
             f.write("{nope")
         self.assertEqual(self.code(self.box.vouched, "a.bak"), "invalid")
+
+    def test_glance_tells_size_first_lines_and_the_lines_a_client_would_run(self):
+        self.written("dump.sql", b"-- dump\n\\connect app\nCOPY t FROM stdin;\n\\N\tx\n\\.\n"
+                                 b"\\! touch /tmp/pwned\nSYSTEM id\n\\. other.sql\nsource other.sql\nSELECT 1;\n")
+        text = glance(self.box.existing("dump.sql"))
+        self.assertIn("dump.sql", text)
+        self.assertIn("10 lines", text)
+        self.assertIn("-- dump", text)
+        for run in ("\\! touch /tmp/pwned", "SYSTEM id", "\\. other.sql", "source other.sql"):
+            self.assertIn(run, text.split("run as commands", 1)[1], run)
+        for harmless in ("\\connect app", "\\N\tx"):
+            self.assertNotIn(harmless, text.split("run as commands", 1)[1], harmless)
+
+    def test_glance_of_a_plain_file_has_no_command_section_and_cuts_long_lines(self):
+        self.written("plain.sql", b"SELECT 1;\n" + b"x" * 5000 + b"\n")
+        text = glance(self.box.existing("plain.sql"))
+        self.assertNotIn("run as commands", text)
+        self.assertLess(len(text), 1000)
 
     def test_listing_shows_visible_regular_files_with_their_size(self):
         self.assertEqual(self.box.listing(), [])
