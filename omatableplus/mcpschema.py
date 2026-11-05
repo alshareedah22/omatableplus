@@ -6,6 +6,7 @@ from .protocol import Error
 
 READ, WRITE, DESTRUCTIVE = "read", "write", "destructive"     # a tool's tier, see McpServer
 SQL_ENGINES = ("postgresql", "mysql", "mariadb", "sqlite")
+SERVER_ENGINES = ("postgresql", "mysql", "mariadb")
 REDIS_ENGINES = ("redis", "valkey")
 MONGO_ENGINES = ("mongodb",)
 FAMILIES = {**dict.fromkeys(SQL_ENGINES, "sql"), **dict.fromkeys(REDIS_ENGINES, "redis"),
@@ -24,6 +25,7 @@ SCHEMA = {"type": "string", "description": "Schema name (SQLite: main, PostgreSQ
 TABLE = {"type": "string", "description": "Table name."}
 SQL = {"type": "string", "description": "SQL text. Several statements run in order and stop at the first error."}
 ROWS = {"type": "integer", "description": f"Rows to return (default {DEFAULT_ROWS}, at most {MAX_ROWS})."}
+FILE = {"type": "string", "description": "A bare file name in the MCP files folder (see list_files); no folder, no path."}
 FILTERS = {
     "type": "array",
     "description": "Conditions on columns. Ops: = <> < > <= >=, contains, not_contains, starts, ends, in "

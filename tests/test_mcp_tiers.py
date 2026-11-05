@@ -1,5 +1,7 @@
 """The MCP tools beyond SQL browsing, by tier: read (default), --write, --destructive."""
+import csv
 import os
+import sqlite3
 import sys
 import types
 import unittest
@@ -10,11 +12,15 @@ sys.path.insert(0, os.path.dirname(__file__))
 from mcpkit import Client, Fixture
 
 from omatableplus import session as session_module
+from omatableplus import sqlgen
 from omatableplus.mcpschema import CELL_LIMIT, MAX_ROWS
 
-READ_TOOLS = {"redis_scan", "redis_get", "redis_keyspace", "mongo_find", "mongo_count", "mongo_indexes",
+READ_TOOLS = {"list_relations", "list_saved_queries", "list_processes", "list_users", "get_user_grants",
+              "preview_user_change", "preview_create_table", "preview_alter_table", "preview_import", "list_files",
+              "redis_scan", "redis_get", "redis_keyspace", "mongo_find", "mongo_count", "mongo_indexes",
               "mongo_aggregate"}
-WRITE_TOOLS = {"commit_changes"}
+WRITE_TOOLS = {"commit_changes", "create_table", "alter_table", "save_query", "import_csv", "export_data",
+               "backup_database", "create_database", "create_connection", "duplicate_connection"}
 DESTRUCTIVE_TOOLS = set()
 NEVER_AN_ARGUMENT = {"confirmed", "password", "tag", "readonly", "overwrite", "path", "id"}
 
@@ -83,11 +89,32 @@ class FakeMongo(FakeAdapter):
         return {"columns": ["n"], "rows": [[1]], "truncated": False}
 
 
-FAKES = {"redis": FakeRedis, "mongodb": FakeMongo}
+class FakeServer(FakeAdapter):
+    engine = "mysql"
+    d = sqlgen.DIALECTS["mysql"]
+
+    def processes(self):
+        return [{"id": 7, "user": "app", "state": "Query"}]
+
+    def users(self):
+        return [{"name": "app", "host": "%"}]
+
+    def user_grants(self, spec):
+        self.record("grants", spec)
+        return ["GRANT SELECT ON *.* TO `app`@`%`"]
+
+    def admin_run(self, statements):
+        self.record("admin", statements)
+
+    def create_database(self, name):
+        self.record("create_database", name)
+
+
+FAKES = {"redis": FakeRedis, "mongodb": FakeMongo, "mysql": FakeServer}
 
 
 class Faked(Fixture):
-    """A config that also holds a MongoDB connection; the Redis and MongoDB ones are served by the fakes above."""
+    """A config that also holds a MongoDB and a MySQL connection; they and the Redis one are served by the fakes above."""
 
     def setUp(self):
         super().setUp()
@@ -98,6 +125,7 @@ class Faked(Fixture):
         patch.start()
         self.addCleanup(patch.stop)
         self.store.save({"name": "Docs", "engine": "mongodb", "host": "localhost", "tag": "local"})
+        self.store.save({"name": "Server", "engine": "mysql", "host": "db.example", "tag": "local"})
 
     def called(self, name):
         return [c for c in FakeAdapter.calls if c[0] == name]
@@ -105,7 +133,7 @@ class Faked(Fixture):
 
 class ToolListingTest(Fixture):
     def names(self, **modes):
-        return set(Client(self.helper, **modes).tool_names())
+        return set(Client(self.helper, files=self.files, **modes).tool_names())
 
     def test_read_mode_offers_every_read_tool_and_nothing_that_changes_anything(self):
         names = self.names()
@@ -121,21 +149,105 @@ class ToolListingTest(Fixture):
         self.assertTrue((READ_TOOLS | WRITE_TOOLS | DESTRUCTIVE_TOOLS) <= self.names(destructive=True))
 
     def test_no_tool_takes_a_secret_a_guard_switch_or_a_free_path(self):
-        client = Client(self.helper, destructive=True)
+        client = Client(self.helper, destructive=True, files=self.files)
         for tool in client.send("tools/list")["result"]["tools"]:
             self.assertFalse(set(tool["inputSchema"]["properties"]) & NEVER_AN_ARGUMENT, tool["name"])
             self.assertIs(tool["inputSchema"]["additionalProperties"], False, tool["name"])
 
     def test_a_tool_of_a_higher_tier_is_unknown_not_refused(self):
-        for tool in ("commit_changes",):
+        for tool in ("commit_changes", "create_table"):
             self.assertEqual(self.client.send("tools/call", {"name": tool, "arguments": {}})["error"]["code"], -32602)
 
     def test_instructions_name_the_mode(self):
-        said = {mode: Client(self.helper, **flags).send("initialize", {})["result"]["instructions"]
+        said = {mode: Client(self.helper, files=self.files, **flags).send("initialize", {})["result"]["instructions"]
                 for mode, flags in (("read", {}), ("write", {"write": True}), ("destructive", {"destructive": True}))}
         self.assertIn("read-only", said["read"])
         self.assertNotIn("destructive", said["write"].replace("not destructive", ""))
         self.assertIn("destructive", said["destructive"])
+        self.assertIn("MCP files folder", said["write"])
+
+
+class ReadToolsTest(Fixture):
+    def test_list_relations_shows_foreign_keys(self):
+        db = sqlite3.connect(self.path)
+        db.execute("CREATE TABLE comments (id INTEGER PRIMARY KEY, note_id INTEGER REFERENCES notes(id))")
+        db.commit()
+        db.close()
+        is_error, payload = self.client.call("list_relations", connection="Notes")
+        self.assertFalse(is_error)
+        self.assertIn("comments", str(payload))
+        self.assertIn("note_id", str(payload))
+
+    def test_saved_queries_are_listed_and_cut_to_a_readable_size(self):
+        self.helper.methods["query.save"](name="long", sql="SELECT '" + "x" * 5000 + "'")
+        _, payload = self.client.call("list_saved_queries")
+        item = payload["items"][0]
+        self.assertEqual(item["name"], "long")
+        self.assertLess(len(item["sql"]), CELL_LIMIT + 50)
+
+    def test_preview_create_table_shows_the_sql_and_creates_nothing(self):
+        is_error, payload = self.client.call(
+            "preview_create_table", connection="Notes", schema="main", table="tags",
+            columns=[{"name": "id", "type": "INTEGER", "pk": True}, {"name": "label", "type": "TEXT"}])
+        self.assertFalse(is_error)
+        self.assertIn("CREATE TABLE", payload["statements"][0])
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'tags'"), 0)
+
+    def test_preview_alter_table_shows_the_sql_and_changes_nothing(self):
+        is_error, payload = self.client.call(
+            "preview_alter_table", connection="Notes", schema="main", table="notes",
+            changes={"columns": [{"op": "add", "name": "extra", "type": "TEXT"}]})
+        self.assertFalse(is_error)
+        self.assertIn("ADD COLUMN", payload["statements"][0])
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM pragma_table_info('notes')"), 2)
+
+    def test_preview_import_reads_a_file_of_the_folder_only(self):
+        os.makedirs(self.files)
+        with open(os.path.join(self.files, "in.csv"), "w") as f:
+            f.write("body\nalpha\nbeta\n")
+        is_error, payload = self.client.call("preview_import", file="in.csv")
+        self.assertFalse(is_error)
+        self.assertEqual((payload["header"], payload["count"]), (["body"], 2))
+        self.assertNotIn(self.files, str(payload))
+        for name in ("../in.csv", "/etc/passwd"):
+            self.assertEqual(self.client.call("preview_import", file=name)[1]["error"]["code"], "invalid", name)
+
+    def test_list_files_shows_the_folder_content(self):
+        self.assertEqual(self.client.call("list_files")[1], {"files": []})
+        os.makedirs(self.files)
+        with open(os.path.join(self.files, "a.csv"), "w") as f:
+            f.write("x")
+        self.assertEqual(self.client.call("list_files")[1], {"files": [{"name": "a.csv", "bytes": 1}]})
+
+    def test_a_sql_engine_without_server_features_says_so(self):
+        for tool, args in (("list_processes", {}), ("list_users", {})):
+            is_error, payload = self.client.call(tool, connection="Notes", **args)
+            self.assertTrue(is_error, tool)
+            self.assertEqual(payload["error"]["code"], "unsupported", tool)
+
+
+class AdminReadTest(Faked):
+    def test_processes_users_and_grants(self):
+        self.assertEqual(self.client.call("list_processes", connection="Server")[1]["processes"][0]["id"], 7)
+        self.assertEqual(self.client.call("list_users", connection="Server")[1]["users"], [{"name": "app", "host": "%"}])
+        _, payload = self.client.call("get_user_grants", connection="Server", name="app", host="%")
+        self.assertEqual(payload["grants"], ["GRANT SELECT ON *.* TO `app`@`%`"])
+
+    def test_preview_user_change_masks_the_statement_and_runs_nothing(self):
+        is_error, payload = self.client.call("preview_user_change", connection="Server", op="grant",
+                                             spec={"name": "app", "host": "%", "scope": "global",
+                                                   "privileges": ["SELECT"]})
+        self.assertFalse(is_error, payload)
+        self.assertIn("GRANT SELECT", payload["statements"][0])
+        self.assertEqual(self.called("admin"), [])
+
+    def test_a_password_never_goes_through_the_model(self):
+        for tool in ("preview_user_change",):
+            is_error, payload = self.client.call(tool, connection="Server", op="create",
+                                                 spec={"name": "x", "password": "hunter2"})
+            self.assertTrue(is_error)
+            self.assertEqual(payload["error"]["code"], "invalid")
+            self.assertNotIn("hunter2", self.client.out.getvalue())
 
 
 class NosqlTest(Faked):
@@ -202,7 +314,7 @@ class NosqlTest(Faked):
         self.assertEqual(self.called("aggregate"), [])
 
     def test_the_session_is_read_only_whatever_the_mode(self):
-        loud = Client(self.helper, destructive=True)
+        loud = Client(self.helper, destructive=True, files=self.files)
         loud.call("redis_keyspace", connection="Cache")
         loud.call("mongo_count", connection="Docs", collection="c", database="shop")
         self.assertEqual(len(self.helper.sessions.items), 2)
@@ -256,6 +368,15 @@ class SqlGuardTest(Fixture):
         self.assertFalse(is_error)
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 2)
 
+    def test_dropping_through_alter_table_is_refused_too(self):
+        for key, item in (("columns", {"op": "drop", "name": "body"}), ("indexes", {"op": "drop", "name": "x"}),
+                          ("foreign_keys", {"op": "drop", "name": "x"})):
+            is_error, payload = self.client.call("alter_table", connection="Notes", schema="main", table="notes",
+                                                 changes={key: [item]})
+            self.assertTrue(is_error, key)
+            self.assertEqual(payload["error"]["code"], "destructive", key)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM pragma_table_info('notes')"), 2)
+
 
 class SessionFollowsTheConnectionTest(Fixture):
     write = True
@@ -291,7 +412,7 @@ class SqlFileEffectsTest(Fixture):
         super().setUp()
         self.outside = os.path.join(self.tmp.name, "outside")
         os.makedirs(self.outside)
-        self.tiers = [Client(self.helper, **flags) for flags in ({}, {"write": True}, {"destructive": True})]
+        self.tiers = [Client(self.helper, files=self.files, **flags) for flags in ({}, {"write": True}, {"destructive": True})]
 
     def tearDown(self):
         for client in self.tiers:
@@ -331,6 +452,8 @@ class SqlFileEffectsTest(Fixture):
                     "SELECT * FROM ts_stat('SELECT 1::tsvector')",
                     "SELECT dblink_exec('dbname=x', 'DELETE FROM notes')", "SELECT 1; SELECT SET_CONFIG('a', 'b', false)"):
             self.refused(sql, "invalid", connection="Legacy PG", tools=("execute_sql", "explain_sql"))
+            is_error, payload = self.tiers[1].call("export_data", connection="Legacy PG", sql=sql, format="csv", file="x.csv")
+            self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"), sql)
 
     def test_those_names_stay_harmless_elsewhere_and_as_plain_text(self):
         write = self.tiers[1]
@@ -341,6 +464,193 @@ class SqlFileEffectsTest(Fixture):
         write = self.tiers[1]
         for sql in ("SELECT 'VACUUM INTO x, ATTACH, COPY, OUTFILE' AS words", "SELECT 1 /* ATTACH */", "VACUUM"):
             self.assertFalse(write.call("execute_sql", connection="Notes", sql=sql)[0], sql)
+
+    def test_export_runs_one_query_that_reads_and_nothing_else(self):
+        write = self.tiers[1]
+        for sql in (f"VACUUM INTO '{self.outside}/e.db'", "DELETE FROM notes", "SELECT 1; SELECT 2",
+                    "PRAGMA user_version(9)", "CREATE TABLE t (x)", "WITH d AS (DELETE FROM notes RETURNING id) SELECT * FROM d",
+                    "SELECT * FROM notes INTO OUTFILE '/tmp/x'"):
+            for ref in ("Notes", "Prod", "Frozen"):
+                is_error, payload = write.call("export_data", connection=ref, sql=sql, format="csv", file="x.csv")
+                self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"), (ref, sql))
+        self.assertEqual((os.listdir(self.outside), self.scalar("SELECT COUNT(*) FROM notes"),
+                          self.scalar("PRAGMA user_version")), ([], 3, 0))
+        self.assertFalse(os.path.exists(os.path.join(self.files, "x.csv")))
+
+    def test_export_still_takes_selects_with_and_values(self):
+        write = self.tiers[1]
+        for n, sql in enumerate(("SELECT body FROM notes", "WITH x AS (SELECT 1 AS n) SELECT n FROM x", "VALUES (1), (2)",
+                                 "  -- all\nselect * from notes;")):
+            is_error, payload = write.call("export_data", connection="Prod", sql=sql, format="json", file=f"ok{n}.json")
+            self.assertFalse(is_error, (sql, payload))
+
+
+class WriteToolsTest(Fixture):
+    write = True
+
+    def put(self, name, text):
+        os.makedirs(self.files, exist_ok=True)
+        with open(os.path.join(self.files, name), "w", newline="") as f:
+            f.write(text)
+
+    def test_create_table(self):
+        is_error, _ = self.client.call(
+            "create_table", connection="Notes", schema="main", table="tags",
+            columns=[{"name": "id", "type": "INTEGER", "pk": True}, {"name": "label", "type": "TEXT"}])
+        self.assertFalse(is_error)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM pragma_table_info('tags')"), 2)
+
+    def test_alter_table_adds_a_column(self):
+        is_error, _ = self.client.call("alter_table", connection="Notes", schema="main", table="notes",
+                                       changes={"columns": [{"op": "add", "name": "extra", "type": "TEXT"}]})
+        self.assertFalse(is_error)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM pragma_table_info('notes')"), 3)
+
+    def test_schema_changes_are_refused_on_production_and_read_only_connections(self):
+        columns = [{"name": "id", "type": "INTEGER", "pk": True}]
+        for ref, code in (("Prod", "confirm"), ("Frozen", "readonly")):
+            is_error, payload = self.client.call("create_table", connection=ref, schema="main", table="tags",
+                                                 columns=columns)
+            self.assertTrue(is_error, ref)
+            self.assertEqual(payload["error"]["code"], code, ref)
+            is_error, payload = self.client.call("alter_table", connection=ref, schema="main", table="notes",
+                                                 changes={"columns": [{"op": "add", "name": "x", "type": "TEXT"}]})
+            self.assertEqual(payload["error"]["code"], code, ref)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'tags'"), 0)
+
+    def test_save_query_creates_a_new_saved_query_and_cannot_overwrite_one(self):
+        self.assertFalse(self.client.call("save_query", name="count notes", sql="SELECT COUNT(*) FROM notes")[0])
+        _, listed = self.client.call("list_saved_queries")
+        self.assertEqual([i["name"] for i in listed["items"]], ["count notes"])
+        is_error, payload = self.client.call("save_query", name="x", sql="SELECT 1", id=listed["items"][0]["id"])
+        self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"))
+
+    def test_saving_under_a_name_already_used_replaces_nothing(self):
+        self.client.call("save_query", name="count notes", sql="SELECT COUNT(*) FROM notes")
+        for name in ("count notes", "  count notes  "):
+            is_error, payload = self.client.call("save_query", name=name, sql="SELECT 'replaced'")
+            self.assertEqual((is_error, payload["error"]["code"]), (True, "exists"), name)
+        _, listed = self.client.call("list_saved_queries")
+        self.assertEqual([(i["name"], i["sql"]) for i in listed["items"]], [("count notes", "SELECT COUNT(*) FROM notes")])
+
+    def test_import_csv_inserts_rows_from_a_file_of_the_folder(self):
+        self.put("in.csv", "body\nalpha\nbeta\n")
+        is_error, payload = self.client.call("import_csv", connection="Notes", schema="main", table="notes",
+                                             file="in.csv", mapping=["body"])
+        self.assertFalse(is_error, payload)
+        self.assertEqual(payload["inserted"], 2)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 5)
+
+    def test_import_csv_is_refused_on_production_and_cannot_leave_the_folder(self):
+        self.put("in.csv", "body\nalpha\n")
+        is_error, payload = self.client.call("import_csv", connection="Prod", schema="main", table="notes",
+                                             file="in.csv", mapping=["body"])
+        self.assertEqual((is_error, payload["error"]["code"]), (True, "confirm"))
+        is_error, payload = self.client.call("import_csv", connection="Notes", schema="main", table="notes",
+                                             file="../in.csv", mapping=["body"])
+        self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"))
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 3)
+
+    def test_export_a_table_to_a_new_file_of_the_folder(self):
+        is_error, payload = self.client.call("export_data", connection="Notes", schema="main", table="notes",
+                                             format="csv", file="notes.csv")
+        self.assertFalse(is_error, payload)
+        self.assertEqual(payload["rows"], 3)
+        self.assertEqual(payload["file"], "notes.csv")
+        with open(os.path.join(self.files, "notes.csv"), newline="") as f:
+            self.assertEqual([r[1] for r in csv.reader(f)], ["body", "one", "two", "three"])
+
+    def test_export_a_query_and_never_overwrite(self):
+        args = {"connection": "Notes", "format": "json", "file": "q.json", "sql": "SELECT body FROM notes"}
+        self.assertFalse(self.client.call("export_data", **args)[0])
+        is_error, payload = self.client.call("export_data", **args)
+        self.assertEqual((is_error, payload["error"]["code"]), (True, "exists"))
+
+    def test_export_is_a_read_so_production_may_do_it_but_cannot_use_it_to_write(self):
+        self.assertFalse(self.client.call("export_data", connection="Prod", schema="main", table="notes",
+                                          format="csv", file="p.csv")[0])
+        is_error, payload = self.client.call("export_data", connection="Notes", format="csv", file="w.csv",
+                                             sql="DELETE FROM notes")
+        self.assertTrue(is_error)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 3)
+        self.assertFalse(os.path.exists(os.path.join(self.files, "w.csv")))
+
+    def test_export_reads_on_a_read_only_session_even_when_the_connection_also_has_a_writable_one(self):
+        self.client.call("execute_sql", connection="Notes", sql="SELECT 1")
+        self.assertFalse(self.client.call("export_data", connection="Notes", sql="SELECT 1 AS n", format="csv",
+                                          file="s.csv")[0])
+        self.assertEqual(sorted(bool(s.conn.get("readonly")) for s in self.helper.sessions.items.values()),
+                         [False, True])
+
+    def test_export_needs_exactly_one_source_and_a_known_format(self):
+        base = {"connection": "Notes", "file": "x.csv", "format": "csv"}
+        for extra in ({}, {"sql": "SELECT 1", "table": "notes", "schema": "main"}, {"table": "notes"}):
+            is_error, payload = self.client.call("export_data", **base, **extra)
+            self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"), extra)
+        is_error, payload = self.client.call("export_data", **{**base, "format": "xlsx"}, sql="SELECT 1")
+        self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"))
+
+    def test_export_and_backup_cannot_leave_the_folder(self):
+        for tool, args in (("export_data", {"schema": "main", "table": "notes", "format": "csv"}),
+                           ("backup_database", {})):
+            for name in ("../x", "/tmp/x", "a/b", ".hidden"):
+                is_error, payload = self.client.call(tool, connection="Notes", file=name, **args)
+                self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"), (tool, name))
+
+    def test_backup_database_writes_a_new_file_of_the_folder(self):
+        is_error, payload = self.client.call("backup_database", connection="Notes", file="app.bak")
+        self.assertFalse(is_error, payload)
+        self.assertEqual(payload["file"], "app.bak")
+        self.assertGreater(os.path.getsize(os.path.join(self.files, "app.bak")), 0)
+        self.assertEqual(self.client.call("backup_database", connection="Notes", file="app.bak")[1]["error"]["code"],
+                         "exists")
+
+    def test_create_database_on_a_file_engine_is_unsupported(self):
+        is_error, payload = self.client.call("create_database", connection="Notes", name="other")
+        self.assertEqual((is_error, payload["error"]["code"]), (True, "unsupported"))
+
+    def test_create_connection_is_read_only_production_and_has_no_password(self):
+        is_error, payload = self.client.call("create_connection", name="New", engine="postgresql", host="db.example",
+                                             user="reader", database="app")
+        self.assertFalse(is_error, payload)
+        saved = self.store.get(payload["id"], secrets=True)
+        self.assertEqual((saved["readonly"], saved["tag"], saved["password"]), (True, "production", ""))
+        self.assertNotIn("password", payload)
+
+    def test_create_connection_only_for_a_host_the_person_already_uses_or_this_machine(self):
+        # libpq completes a missing password from ~/.pgpass and PGPASSWORD, whatever host it is told to reach
+        is_error, payload = self.client.call("create_connection", name="Evil", engine="postgresql",
+                                             host="attacker.example")
+        self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"))
+        self.assertIn("attacker.example", payload["error"]["message"])
+        self.assertEqual([c["name"] for c in self.store.list() if c["name"] == "Evil"], [])
+        for n, host in enumerate(("localhost", "127.0.0.1", "::1", "127.0.0.5", "DB.EXAMPLE", " db.example ")):
+            is_error, payload = self.client.call("create_connection", name=f"Ok {n}", engine="postgresql", host=host)
+            self.assertFalse(is_error, (host, payload))
+
+    def test_create_connection_only_for_server_engines_and_with_no_guard_switch(self):
+        is_error, payload = self.client.call("create_connection", name="File", engine="sqlite", host="x")
+        self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"))
+        for extra in ({"tag": "local"}, {"readonly": False}, {"password": "p"}, {"path": "/etc/passwd"}):
+            is_error, payload = self.client.call("create_connection", name="N", engine="mysql", host="h", **extra)
+            self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"), extra)
+        self.assertEqual([c["name"] for c in self.store.list() if c["name"] in ("File", "N")], [])
+
+    def test_duplicate_connection_keeps_the_guards_of_the_source(self):
+        is_error, payload = self.client.call("duplicate_connection", connection="Prod")
+        self.assertFalse(is_error, payload)
+        copy = self.store.get(payload["id"], secrets=True)
+        self.assertEqual((copy["tag"], copy["name"]), ("production", "Prod copy"))
+        frozen = self.client.call("duplicate_connection", connection="Frozen")[1]
+        self.assertTrue(self.store.get(frozen["id"], secrets=True)["readonly"])
+
+    def test_nothing_is_written_outside_the_folder(self):
+        self.client.call("export_data", connection="Notes", schema="main", table="notes", format="csv", file="a.csv")
+        self.client.call("backup_database", connection="Notes", file="a.bak")
+        kept = {".backups.json", ".backups.lock"}      # the record of the backups, and the lock around it
+        leftovers = [n for n in os.listdir(self.files) if n.startswith(".") and n not in kept]
+        self.assertEqual((sorted(n for n in os.listdir(self.files) if n not in kept), leftovers),
+                         (["a.bak", "a.csv"], []))
 
 
 class DestructiveToolsTest(Fixture):

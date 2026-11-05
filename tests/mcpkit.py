@@ -17,9 +17,9 @@ from omatableplus.store import Keyring, Store
 class Client:
     """Drives an McpServer one JSON-RPC message at a time and reads back what it wrote."""
 
-    def __init__(self, helper, write=False, destructive=False):
+    def __init__(self, helper, write=False, destructive=False, files=None):
         self.out = io.StringIO()
-        self.server = McpServer(helper, write=write, destructive=destructive, out=self.out)
+        self.server = McpServer(helper, write=write, destructive=destructive, files=files, out=self.out)
         self.helper = helper
         self.seen = 0
         self.next_id = 0
@@ -85,7 +85,8 @@ class Fixture(unittest.TestCase):
         self.store.save({"name": "Legacy MySQL", "engine": "mysql", "host": "db.example", "port": 3306,
                          "user": "app", "password": "s3cret", "tag": "staging"})
         self.store.save({"name": "Cache", "engine": "redis", "host": "localhost", "tag": "local"})
-        self.client = Client(self.helper, write=self.write, destructive=self.destructive)
+        self.files = os.path.join(self.tmp.name, "files")
+        self.client = Client(self.helper, write=self.write, destructive=self.destructive, files=self.files)
 
     def tearDown(self):
         self.client.server.close()

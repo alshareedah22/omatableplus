@@ -380,7 +380,7 @@ class ReadTest(Fixture):
             self.assertIn("readonly", payload["results"][0]["error"]["message"].replace("-", ""))
             self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 3)
             # the same blind gate in write mode lets the DELETE run: it is the driver that stopped the first one
-            writer = Client(self.helper, write=True)
+            writer = Client(self.helper, write=True, files=self.files)
             self.assertFalse(writer.call("execute_sql", connection="Notes", sql="DELETE FROM notes")[0])
             self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 0)
 
