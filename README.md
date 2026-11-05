@@ -210,7 +210,7 @@ What the agent may do is decided by **you, when you launch the server**, never b
 
 | `args` | Tier | The agent can |
 |---|---|---|
-| `["mcp"]` | read (27 tools) | browse, query, explain, preview. SQL sessions are read-only, which the database enforces |
+| `["mcp"]` | read (27 tools) | browse, query, explain, preview. SQL sessions are opened read-only (see the limits below) |
 | `["mcp", "--write"]` | write (37 tools) | also insert, update, delete, create and alter tables, import, export, back up |
 | `["mcp", "--destructive"]` | destructive (45 tools) | also drop, truncate, restore, stop processes, change users, delete connections |
 
@@ -229,23 +229,35 @@ What the agent may do is decided by **you, when you launch the server**, never b
 
 What keeps an agent from doing more than you would at the window:
 
-- **Production and Read-only connections refuse every change**, in every tier. The agent cannot confirm a
-  production write, and `confirmed` is not an argument of any tool. Run it in the window.
+- **Production and Read-only connections refuse every change**, in every tier, `delete_connection` included. The agent
+  cannot confirm a production write, and `confirmed` is not an argument of any tool. Run it in the window. A
+  connection you retag or make read-only in the window is picked up by a server that is already running.
 - **`DROP`, `TRUNCATE`, `GRANT`, `REVOKE` and `ALTER … DROP` through `execute_sql`** are refused below
-  `--destructive`. That is a check on the first keyword, not a SQL parser: the rights of the database user remain
-  the real boundary, so give the agent a user that cannot do what you do not want done.
+  `--destructive`, and so are `PREPARE`, `EXECUTE`, `DO` and the SQLite `writable_schema` pragma, which can hide a drop
+  from the first word. That is a check on the first keyword, not a SQL parser: the rights of the database user remain
+  the real boundary (a stored procedure started with `CALL` can drop what its user may drop), so give the agent a user
+  that cannot do what you do not want done.
+- **SQL cannot reach files.** `execute_sql` and `explain_sql` refuse, in every tier, `ATTACH`, `VACUUM INTO`, `COPY`,
+  `LOAD` and `INTO OUTFILE / DUMPFILE`, and the `/*! … */` comments MySQL runs, which would hide them from the check.
 - **Files** are only named, never pathed: `import_csv`, `export_data`, `backup_database` and `restore_database` take a
   bare file name inside one folder, `~/Downloads/omatableplus-mcp` (change it with `--files-dir`). Nothing is
   overwritten and symbolic links are refused. The agent can create a file there only through `export_data` or
-  `backup_database` (an export of a literal `SELECT` is a file of its choosing), never anywhere else: drop the CSV you
-  want imported yourself, and know that `restore_database` runs the SQL of its file, which is why it is destructive.
-  `export_data` runs on a read-only session, so it cannot be used to write to the database.
+  `backup_database`, never anywhere else (an export of a literal `SELECT` is a file of its choosing): drop the CSV you
+  want imported yourself. `export_data` takes one `SELECT`, `WITH` or `VALUES`, on a read-only session, so it cannot
+  be used to write to the database. `restore_database` only loads a file that `backup_database` wrote and nobody
+  changed since (its sha256 is kept in `.backups.json` of that folder): `psql` and `mysql` run `\!` and `system`
+  lines as shell commands, and the file of an export is shaped by the agent. Restore any other dump in the window.
 - **Passwords never go through the agent.** `create_connection` (PostgreSQL, MySQL/MariaDB only) saves a connection
-  read-only, tagged production and without a password; you complete and relax it in the window. There is no tool to
-  edit a connection, because changing its tag or host would lift the production guard. `change_user` refuses any
-  password field.
+  read-only, tagged production and without a password, for `localhost` or a host a saved connection already uses
+  (libpq would otherwise fill the password from `~/.pgpass` or `PGPASSWORD` for any host); you complete and relax it
+  in the window. There is no tool to edit a connection, because changing its tag or host would lift the production
+  guard. `change_user` refuses any password field.
+- **`save_query` saves under a new name** and never replaces a saved query.
+- **Read-only sessions.** SQLite opens the file read-only, which the driver enforces. On PostgreSQL and MySQL/MariaDB
+  read-only is a session setting that the SQL of the session can switch back (`SET`, `set_config`): if the agent must
+  not write there, give it a database user without write rights. This was not tried against real servers.
 - **Redis and MongoDB cannot be made read-only at the driver**, so the agent only gets tools that cannot write: no
-  raw command, and an aggregation pipeline mentioning `$out` or `$merge` is refused.
+  raw command, and an aggregation pipeline with the `$out` or `$merge` stage is refused.
 - Rows are capped (50 by default, 200 at most), long cells are cut at 1,000 characters and binary values are shown
   as `‹binary N bytes›`.
 - Pass `database` when a connection has no default database (`list_databases` shows an empty `database`).

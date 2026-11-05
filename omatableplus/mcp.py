@@ -44,7 +44,7 @@ READ_ONLY_HINT = "The MCP server was started without --write, so every session i
 ENGINES_SAID = "SQL (PostgreSQL, MySQL/MariaDB, SQLite), plus Redis and MongoDB for reading"
 INSTRUCTIONS = {
     READ: (f"OmaTablePlus databases: {ENGINES_SAID}. This server is read-only: SQL sessions are opened read-only and "
-           "the database refuses writes. Start with list_connections, then list_objects, describe_object or "
+           "writes are refused. Start with list_connections, then list_objects, describe_object or "
            "search_schema, then search_rows or execute_sql; redis_* and mongo_* tools read Redis and MongoDB."),
     WRITE: (f"OmaTablePlus databases: {ENGINES_SAID}. This server is in write mode: SQL writes run on connections "
             "that are neither read-only nor tagged production; production writes are refused. Start with "
