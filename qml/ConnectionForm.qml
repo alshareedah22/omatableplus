@@ -27,6 +27,11 @@ Flickable {
     { id: "redis", title: "Redis", port: 6379 }, { id: "valkey", title: "Valkey", port: 6379 },
     { id: "mongodb", title: "MongoDB", port: 27017 }]
   readonly property var tags: ["local", "development", "staging", "production"]
+  // the engine colours (store.ENGINE_COLORS) first, then a spread of hues
+  readonly property var engineColors: ({ postgresql: "#336791", mysql: "#00758f", mariadb: "#c0765a", sqlite: "#4b8bbe",
+    redis: "#d82c20", valkey: "#6983ff", mongodb: "#4faa41" })
+  readonly property var palette: ["#e5484d", "#f76b15", "#ffc53d", "#46a758", "#12a594", "#0090ff", "#6e56cf", "#d6409f",
+    "#8d8d8d"]
   readonly property var sshAuths: ["agent", "key", "password"]
   readonly property string engine: engineBox.value
   readonly property bool isNew: !conn || !conn.id
@@ -138,6 +143,7 @@ Flickable {
       Column {
         spacing: 4
         Layout.fillWidth: true
+        Layout.alignment: Qt.AlignTop
         Text { textFormat: Text.PlainText; text: "Engine"; color: Commons.Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
         Ui.Dropdown {
           id: engineBox
@@ -153,10 +159,36 @@ Flickable {
       Column {
         spacing: 4
         Layout.preferredWidth: 160
+        Layout.alignment: Qt.AlignTop
         Text { textFormat: Text.PlainText; text: "Tag"; color: Commons.Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
         Ui.Dropdown { id: tagBox; width: parent.width; showLabel: false; value: "local"; options: form.tags }
       }
-      Field { id: colorField; label: "Color"; Layout.preferredWidth: 110; placeholder: "#rrggbb" }
+      // the swatch sits inside the hex input; focusing the input opens the picker
+      Field {
+        id: colorField
+        label: "Color"
+        Layout.preferredWidth: 130
+        Layout.alignment: Qt.AlignTop
+        placeholder: form.engineColors[form.engine]
+        minInputHeight: engineBox.height
+        trailingSpace: colorPicker.width + 4
+        onInputFocusedChanged: if (inputFocused) colorPicker.open(); else colorPicker.close()
+        Keys.onEscapePressed: function(e) { if (colorPicker.opened) colorPicker.close(); else e.accepted = false }
+        ColorPicker {
+          id: colorPicker
+          parent: colorField.inputItem
+          anchorItem: colorField.inputItem
+          anchors.right: parent.right
+          anchors.rightMargin: 5
+          anchors.verticalCenter: parent.verticalCenter
+          width: parent.height - 10
+          height: parent.height - 10
+          value: colorField.text
+          fallback: form.engineColors[form.engine] || "#888888"
+          presets: Object.keys(form.engineColors).map(function(k) { return form.engineColors[k] }).concat(form.palette)
+          onPicked: function(hex) { colorField.setText(hex) }
+        }
+      }
     }
 
     Field { id: pathField; label: "Database file"; Layout.fillWidth: true; visible: form.engine === "sqlite"; placeholder: "/path/to/database.db" }
