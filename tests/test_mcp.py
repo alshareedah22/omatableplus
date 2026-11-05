@@ -1,11 +1,13 @@
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 from mcpkit import Client, Fixture
 
+from omatableplus import safety
 from omatableplus.mcp import LATEST, SUPPORTED
 from omatableplus.mcpschema import CELL_LIMIT, DEFAULT_ROWS, MAX_ROWS, shrink, shrink_rows
 
@@ -200,11 +202,24 @@ class ReadTest(Fixture):
         self.assertTrue(is_error)
         self.assertIn("nope", payload["results"][-1]["error"]["message"])
 
-    def test_read_mode_refuses_writes_at_the_driver(self):
+    def test_read_mode_refuses_a_write_with_the_readonly_code(self):
         is_error, payload = self.client.call("execute_sql", connection="Notes", sql="DELETE FROM notes")
         self.assertTrue(is_error)
         self.assertEqual(payload["error"]["code"], "readonly")
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 3)
+
+    def test_a_read_mode_session_is_read_only_at_the_driver_when_the_helper_gate_lets_a_write_through(self):
+        # the gate above is the helper's own check of the SQL; with it out of the way, the driver must still refuse
+        blind = mock.patch.object(safety, "sql_writes", lambda statements, engine: [])
+        with blind:
+            is_error, payload = self.client.call("execute_sql", connection="Notes", sql="DELETE FROM notes")
+            self.assertTrue(is_error)
+            self.assertIn("readonly", payload["results"][0]["error"]["message"].replace("-", ""))
+            self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 3)
+            # the same blind gate in write mode lets the DELETE run: it is the driver that stopped the first one
+            writer = Client(self.helper, write=True, files=self.files)
+            self.assertFalse(writer.call("execute_sql", connection="Notes", sql="DELETE FROM notes")[0])
+            self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 0)
 
     def test_explain_sql(self):
         is_error, payload = self.client.call("explain_sql", connection="Notes", sql="SELECT * FROM notes WHERE id = 1")

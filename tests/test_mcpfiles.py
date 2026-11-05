@@ -57,10 +57,14 @@ class SandboxTest(unittest.TestCase):
             self.assertEqual(self.code(self.box.existing, name), "invalid", name)
             self.assertEqual(self.code(self.box.new, name), "exists", name)
 
-    def test_a_symlinked_folder_is_not_followed_out_of_the_sandbox_name_space(self):
+    def test_a_symlinked_folder_is_neither_followed_nor_replaced_nor_reached_through_a_path(self):
         os.makedirs(self.root)
         os.symlink(self.tmp.name, os.path.join(self.root, "up"))
+        self.assertEqual(self.code(self.box.existing, "up"), "invalid")
+        self.assertEqual(self.code(self.box.new, "up"), "exists")
         self.assertEqual(self.code(self.box.new, "up/x.csv"), "invalid")
+        self.assertEqual(self.code(self.box.existing, "up/secret.csv"), "invalid")
+        self.assertEqual(self.box.listing(), [])
 
     def written(self, name, content=b"dump"):
         with open(self.box.new(name), "wb") as f:
