@@ -1,5 +1,7 @@
 """What the MCP tools share: limits, argument schemas, argument checking and shrinking what a model reads."""
 
+import json
+
 from .protocol import Error
 
 READ, WRITE, DESTRUCTIVE = "read", "write", "destructive"     # a tool's tier, see McpServer
@@ -72,6 +74,9 @@ def shrink(value):
     """What a model can read: no raw bytes, no huge text."""
     if isinstance(value, (bytes, bytearray, memoryview)):
         return f"‹binary {len(value)} bytes›"
+    if isinstance(value, (dict, list)):       # a JSON column: its text is what gets cut
+        text = json.dumps(value, ensure_ascii=False, default=str)
+        return shrink(text) if len(text) > CELL_LIMIT else value
     if isinstance(value, str) and len(value) > CELL_LIMIT:
         return value[:CELL_LIMIT] + f"…[+{len(value) - CELL_LIMIT} chars]"
     return value

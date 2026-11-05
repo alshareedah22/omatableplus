@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from mcpkit import Client, Fixture
 
 from omatableplus.mcp import LATEST, SUPPORTED
-from omatableplus.mcpschema import CELL_LIMIT, DEFAULT_ROWS, MAX_ROWS
+from omatableplus.mcpschema import CELL_LIMIT, DEFAULT_ROWS, MAX_ROWS, shrink, shrink_rows
 
 
 class ProtocolTest(Fixture):
@@ -47,6 +47,24 @@ class ProtocolTest(Fixture):
     def test_unknown_tool_is_a_protocol_error(self):
         reply = self.client.send("tools/call", {"name": "format_disk", "arguments": {}})
         self.assertEqual(reply["error"]["code"], -32602)
+
+
+class ShrinkTest(unittest.TestCase):
+    def test_a_json_cell_is_cut_like_a_text_cell(self):
+        for cell in ({"a": "x" * 5000}, ["y" * 600, "z" * 600], {"deep": {"deeper": ["w" * 3000]}}):
+            cut = shrink(cell)
+            self.assertIsInstance(cut, str)
+            self.assertLess(len(cut), CELL_LIMIT + 50)
+            self.assertIn("chars]", cut)
+
+    def test_a_small_json_cell_stays_as_it_is(self):
+        for cell in ({"a": 1, "b": [1, 2]}, [1, "two", None], {}):
+            self.assertEqual(shrink(cell), cell)
+
+    def test_rows_are_shrunk_cell_by_cell(self):
+        rows = shrink_rows([[1, {"k": "v" * 5000}, b"\x00"]])
+        self.assertEqual((rows[0][0], rows[0][2]), (1, "‹binary 1 bytes›"))
+        self.assertIsInstance(rows[0][1], str)
 
 
 class ReadTest(Fixture):
