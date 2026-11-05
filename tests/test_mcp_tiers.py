@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from mcpkit import Client, Fixture
 
+from omatableplus import omadb
 from omatableplus import session as session_module
 from omatableplus import sqlgen
 from omatableplus.mcpschema import CELL_LIMIT, MAX_ROWS
@@ -21,7 +22,8 @@ READ_TOOLS = {"list_relations", "list_saved_queries", "list_processes", "list_us
               "mongo_aggregate"}
 WRITE_TOOLS = {"commit_changes", "create_table", "alter_table", "save_query", "import_csv", "export_data",
                "backup_database", "create_database", "create_connection", "duplicate_connection"}
-DESTRUCTIVE_TOOLS = set()
+DESTRUCTIVE_TOOLS = {"drop_object", "truncate_table", "drop_database", "restore_database", "kill_process",
+                     "change_user", "delete_saved_query", "delete_connection"}
 NEVER_AN_ARGUMENT = {"confirmed", "password", "tag", "readonly", "overwrite", "path", "id"}
 
 
@@ -96,6 +98,10 @@ class FakeServer(FakeAdapter):
     def processes(self):
         return [{"id": 7, "user": "app", "state": "Query"}]
 
+    def kill(self, pid, hard=False):
+        self.record("kill", pid, hard)
+        return {"ok": True}
+
     def users(self):
         return [{"name": "app", "host": "%"}]
 
@@ -106,15 +112,30 @@ class FakeServer(FakeAdapter):
     def admin_run(self, statements):
         self.record("admin", statements)
 
+    def drop_database(self, name):
+        self.record("drop_database", name)
+
     def create_database(self, name):
         self.record("create_database", name)
+
+    def truncate(self, schema, table):
+        self.record("truncate", schema, table)
+        return {"ok": True}
+
+    def drop(self, schema, table, kind="table"):
+        self.record("drop", schema, table, kind)
+        return {"ok": True}
+
+    def drop_object(self, schema, name, kind, table=None, signature=None):
+        self.record("drop_object", schema, name, kind, table, signature)
+        return {"ok": True}
 
 
 FAKES = {"redis": FakeRedis, "mongodb": FakeMongo, "mysql": FakeServer}
 
 
 class Faked(Fixture):
-    """A config that also holds a MongoDB and a MySQL connection; they and the Redis one are served by the fakes above."""
+    """A config that also holds a Redis, a MongoDB and two MySQL connections served by the fakes above."""
 
     def setUp(self):
         super().setUp()
@@ -126,6 +147,7 @@ class Faked(Fixture):
         self.addCleanup(patch.stop)
         self.store.save({"name": "Docs", "engine": "mongodb", "host": "localhost", "tag": "local"})
         self.store.save({"name": "Server", "engine": "mysql", "host": "db.example", "tag": "local"})
+        self.store.save({"name": "Server prod", "engine": "mysql", "host": "db.example", "tag": "production"})
 
     def called(self, name):
         return [c for c in FakeAdapter.calls if c[0] == name]
@@ -155,7 +177,7 @@ class ToolListingTest(Fixture):
             self.assertIs(tool["inputSchema"]["additionalProperties"], False, tool["name"])
 
     def test_a_tool_of_a_higher_tier_is_unknown_not_refused(self):
-        for tool in ("commit_changes", "create_table"):
+        for tool in ("drop_object", "create_table"):
             self.assertEqual(self.client.send("tools/call", {"name": tool, "arguments": {}})["error"]["code"], -32602)
 
     def test_instructions_name_the_mode(self):
@@ -660,6 +682,142 @@ class DestructiveToolsTest(Fixture):
     def test_execute_sql_may_drop(self):
         self.assertFalse(self.client.call("execute_sql", connection="Notes", sql="DROP TABLE big")[0])
         self.assertEqual(self.scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'big'"), 0)
+
+    def test_drop_object_drops_a_table_or_a_view(self):
+        self.client.call("execute_sql", connection="Notes", sql="CREATE VIEW v AS SELECT * FROM notes")
+        for name, kind in (("big", "table"), ("v", "view")):
+            is_error, payload = self.client.call("drop_object", connection="Notes", schema="main", name=name, kind=kind)
+            self.assertFalse(is_error, payload)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM sqlite_master WHERE name IN ('big', 'v')"), 0)
+
+    def test_truncate_table_empties_it(self):
+        is_error, payload = self.client.call("truncate_table", connection="Notes", schema="main", table="big")
+        self.assertFalse(is_error, payload)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM big"), 0)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 3)
+
+    def test_production_and_read_only_connections_survive_every_destructive_tool(self):
+        for ref, code in (("Prod", "confirm"), ("Frozen", "readonly")):
+            for tool, args in (("drop_object", {"schema": "main", "name": "notes", "kind": "table"}),
+                               ("truncate_table", {"schema": "main", "table": "notes"}),
+                               ("drop_database", {"name": "main"}),
+                               ("kill_process", {"process_id": 1})):
+                is_error, payload = self.client.call(tool, connection=ref, **args)
+                self.assertTrue(is_error, (ref, tool))
+                self.assertIn(payload["error"]["code"], (code, "unsupported"), (ref, tool))
+            self.assertEqual(self.client.call("drop_object", connection=ref, schema="main", name="notes",
+                                              kind="table")[1]["error"]["code"], code)
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 3)
+
+    def test_restore_database_reaches_the_helper_with_a_file_of_the_folder(self):
+        # the helper restores PostgreSQL, MySQL and MongoDB dumps; for a SQLite file it says so, which proves the
+        # tool got as far as the helper with a resolved path (a real restore needs the drivers' dump tools)
+        self.client.call("backup_database", connection="Notes", file="app.bak")
+        is_error, payload = self.client.call("restore_database", connection="Notes", file="app.bak")
+        self.assertEqual((is_error, payload["error"]["code"]), (True, "unsupported"))
+        self.assertEqual(self.client.call("restore_database", connection="Notes", file="nope.bak")[1]["error"]["code"],
+                         "notfound")
+
+    def test_restore_only_loads_what_backup_database_wrote(self):
+        # a file the model shaped itself would run with the server's rights: psql executes `\! command`,
+        # and an export puts a column alias of the model's choosing in the first line of a CSV
+        loaded = []
+        spy = lambda **kwargs: loaded.append(os.path.basename(kwargs["path"])) or {"ms": 0, "database": "main"}  # noqa: E731
+        self.assertFalse(self.client.call("backup_database", connection="Notes", file="app.bak")[0])
+        self.assertFalse(self.client.call("export_data", connection="Notes", format="csv", file="evil.sql",
+                                          sql='SELECT 1 AS "a \\! touch /tmp/pwned"')[0])
+        with open(os.path.join(self.files, "by-hand.sql"), "w") as f:
+            f.write("SELECT 1;")
+        with mock.patch.dict(self.helper.methods, {"db.restore": spy}):
+            for name in ("evil.sql", "by-hand.sql"):
+                is_error, payload = self.client.call("restore_database", connection="Notes", file=name)
+                self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"), name)
+                self.assertIn("backup_database", payload["error"]["message"])
+            self.assertFalse(self.client.call("restore_database", connection="Notes", file="app.bak")[0])
+            with open(os.path.join(self.files, "app.bak"), "ab") as f:
+                f.write(b"\n\\! touch /tmp/pwned\n")
+            self.assertEqual(self.client.call("restore_database", connection="Notes", file="app.bak")[1]["error"]["code"],
+                             "invalid")
+        self.assertEqual(loaded, ["app.bak"])
+
+    def test_restore_cannot_read_outside_the_folder(self):
+        is_error, payload = self.client.call("restore_database", connection="Notes", file="../app.db")
+        self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"))
+
+    def test_delete_saved_query(self):
+        item = self.helper.methods["query.save"](name="old", sql="SELECT 1")
+        self.assertFalse(self.client.call("delete_saved_query", query_id=item["id"])[0])
+        self.assertEqual(self.client.call("list_saved_queries")[1]["items"], [])
+
+    def test_delete_connection_closes_its_sessions_and_forgets_it(self):
+        self.client.call("execute_sql", connection="Notes", sql="SELECT 1")
+        self.assertFalse(self.client.call("delete_connection", connection="Notes")[0])
+        self.assertNotIn(self.local["id"], [c["id"] for c in self.store.list()])
+        self.assertEqual(self.helper.sessions.items, {})
+
+    def test_a_production_or_read_only_connection_is_not_deleted_like_it_is_not_changed(self):
+        for ref, code in (("Prod", "confirm"), ("Frozen", "readonly")):
+            is_error, payload = self.client.call("delete_connection", connection=ref)
+            self.assertEqual((is_error, payload["error"]["code"]), (True, code), ref)
+        self.assertTrue({self.prod["id"], self.frozen["id"]} <= {c["id"] for c in self.store.list()})
+
+    def test_copy_and_delete_leave_omadb_servers_alone(self):
+        server = {"id": "omadb:fake", "name": "Fake", "engine": "mysql", "host": "127.0.0.1", "port": 3306}
+        with mock.patch.object(omadb, "servers", lambda: [server]):
+            self.assertFalse(self.client.call("list_connections")[0])
+            for tool in ("delete_connection", "duplicate_connection"):
+                is_error, payload = self.client.call(tool, connection="Fake")
+                self.assertEqual((is_error, payload["error"]["code"]), (True, "notfound"), tool)
+                self.assertIn("saved connection", payload["error"]["message"], tool)
+
+
+class ServerAdminTest(Faked):
+    write = True
+    destructive = True
+
+    def test_kill_process(self):
+        self.assertFalse(self.client.call("kill_process", connection="Server", process_id=7, hard=True)[0])
+        self.assertEqual(self.called("kill"), [("kill", 7, True)])
+
+    def test_drop_and_create_database(self):
+        self.assertFalse(self.client.call("drop_database", connection="Server", name="old")[0])
+        self.assertFalse(self.client.call("create_database", connection="Server", name="fresh")[0])
+        self.assertEqual((self.called("drop_database"), self.called("create_database")),
+                         ([("drop_database", "old")], [("create_database", "fresh")]))
+
+    def test_drop_object_routes_functions_and_triggers_to_their_own_method(self):
+        self.client.call("drop_object", connection="Server", schema="app", name="f", kind="function", signature="a int")
+        self.client.call("drop_object", connection="Server", schema="app", name="t", kind="trigger", table="orders")
+        self.client.call("drop_object", connection="Server", schema="app", name="orders", kind="table")
+        self.assertEqual(self.called("drop_object"), [("drop_object", "app", "f", "function", None, "a int"),
+                                                      ("drop_object", "app", "t", "trigger", "orders", None)])
+        self.assertEqual(self.called("drop"), [("drop", "app", "orders", "table")])
+
+    def test_truncate_table(self):
+        self.client.call("truncate_table", connection="Server", schema="app", table="orders")
+        self.assertEqual(self.called("truncate"), [("truncate", "app", "orders")])
+
+    def test_change_user_runs_the_statements(self):
+        is_error, payload = self.client.call("change_user", connection="Server", op="drop",
+                                             spec={"name": "app", "host": "%"})
+        self.assertFalse(is_error, payload)
+        self.assertEqual(self.called("admin"), [("admin", ["DROP USER 'app'@'%'"])])
+
+    def test_change_user_refuses_a_password(self):
+        is_error, payload = self.client.call("change_user", connection="Server", op="alter",
+                                             spec={"name": "app", "password": "hunter2"})
+        self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"))
+        self.assertEqual(self.called("admin"), [])
+
+    def test_production_refuses_each_server_tool(self):
+        calls = (("kill_process", {"process_id": 7}), ("drop_database", {"name": "old"}), ("create_database", {"name": "x"}),
+                 ("truncate_table", {"schema": "a", "table": "t"}),
+                 ("drop_object", {"schema": "a", "name": "t", "kind": "table"}),
+                 ("change_user", {"op": "drop", "spec": {"name": "app"}}))
+        for tool, args in calls:
+            is_error, payload = self.client.call(tool, connection="Server prod", **args)
+            self.assertEqual((is_error, payload["error"]["code"]), (True, "confirm"), tool)
+        self.assertEqual([c[0] for c in FakeAdapter.calls if c[0] != "use"], [])
 
 
 if __name__ == "__main__":

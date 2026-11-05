@@ -8,7 +8,6 @@ Rules that keep a model from doing more than a person at the window could:
   * the helper's `confirmed` flag is never an argument: a production write is refused, not confirmed;
   * three tiers chosen at launch, never by the model: read (default), --write, --destructive (implies --write);
   * without --write every SQL session is opened read-only, which the database driver enforces;
-  * SQL that drops, truncates or changes rights needs --destructive, and SQL that reaches files is always refused.
   * Redis and MongoDB are read only, and files only live in one folder (see mcpfiles).
 
 Requests are served one at a time.
@@ -53,9 +52,10 @@ INSTRUCTIONS = {
             "key, all or nothing) over hand-written SQL. Dropping, truncating and rights changes are not enabled. "
             "Import, export, backup and restore only use files of the MCP files folder (list_files)."),
     DESTRUCTIVE: (f"OmaTablePlus databases: {ENGINES_SAID}. This server is in destructive mode: besides writing, it "
-                  "may drop, truncate and change rights through SQL, on connections that are neither "
+                  "may drop, truncate, restore, stop processes and change users, on connections that are neither "
                   "read-only nor tagged production; production is still refused. Preview before you change: "
-                  "preview_changes."),
+                  "preview_changes, preview_alter_table, preview_user_change. Import, export, backup and restore "
+                  "only use files of the MCP files folder (list_files)."),
 }
 
 # name, description, properties, required, tier
@@ -283,6 +283,12 @@ class McpServer(AdminTools, NosqlTools):
         self.open.clear()
         self.home.clear()
 
+    def drop_sessions_of(self, conn_id):
+        for key in [key for key in self.open if key[0] == conn_id]:
+            sid = self.open.pop(key)
+            self.home.pop(sid, None)
+            self.helper.sessions.close(sid)
+
     # tools ------------------------------------------------------------------
     def tool_list_connections(self):
         listed = self.methods["conn.list"]()
@@ -382,7 +388,7 @@ def main(argv=None):
     parser.add_argument("--write", action="store_true",
                         help="allow writes on connections that are neither read-only nor tagged production")
     parser.add_argument("--destructive", action="store_true",
-                        help="also allow SQL that drops, truncates or changes rights (implies --write)")
+                        help="also allow drop, truncate, restore, killing processes and user changes (implies --write)")
     parser.add_argument("--files-dir", default=DEFAULT_FILES,
                         help="the only folder import, export, backup and restore use (default: %(default)s)")
     options = parser.parse_args(argv)

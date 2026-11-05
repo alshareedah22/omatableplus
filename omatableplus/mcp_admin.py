@@ -1,13 +1,15 @@
-"""MCP tools beyond browsing SQL: schema changes, files, server information, saved queries, connections.
+"""MCP tools beyond browsing SQL: schema changes, files, server administration, saved queries, connections.
 
 A mixin of McpServer. Every change still goes through the helper methods, so read-only connections and the
-production tag refuse exactly what they refuse in the window; MCP never confirms.
+production tag refuse exactly what they refuse in the window; MCP never confirms. Tiers:
+  write        changes that add or alter (--write)
+  destructive  changes that remove (--destructive)
 Files are only ever named inside the MCP files folder, see mcpfiles.
 """
 
 import ipaddress
 
-from .mcpschema import (CONNECTION, DATABASE, FILE, FILTERS, READ, SCHEMA, SERVER_ENGINES, SORT, SQL,
+from .mcpschema import (CONNECTION, DATABASE, DESTRUCTIVE, FILE, FILTERS, READ, SCHEMA, SERVER_ENGINES, SORT, SQL,
                         TABLE, WRITE, shrink, trim)
 from .mcpsql import refuse_unless_read
 from .protocol import Error
@@ -87,6 +89,35 @@ TOOLS = (
      ("name", "engine", "host"), WRITE),
     ("duplicate_connection", "Copy a saved connection with its tag and read-only switch.",
      {"connection": CONNECTION}, ("connection",), WRITE),
+
+    ("drop_object", "Drop a table, view, function or trigger.",
+     {"connection": CONNECTION, "database": DATABASE, "schema": SCHEMA,
+      "name": {"type": "string", "description": "Object name."},
+      "kind": {"type": "string", "description": "table, view, function or trigger."},
+      "table": {"type": "string", "description": "Table of a trigger, when the name is not enough."},
+      "signature": {"type": "string", "description": "Argument list of a PostgreSQL function with several versions."}},
+     ("connection", "schema", "name", "kind"), DESTRUCTIVE),
+    ("truncate_table", "Delete every row of a table.",
+     {"connection": CONNECTION, "database": DATABASE, "schema": SCHEMA, "table": TABLE},
+     ("connection", "schema", "table"), DESTRUCTIVE),
+    ("drop_database", "Drop a database and everything in it.",
+     {"connection": CONNECTION, "name": {"type": "string", "description": "Database to drop."}},
+     ("connection", "name"), DESTRUCTIVE),
+    ("restore_database", "Load a file of the MCP files folder into the database. Only a file that backup_database "
+     "wrote, and nobody changed since, is loaded; any other one is restored in the OmaTablePlus window.",
+     {"connection": CONNECTION, "database": DATABASE, "file": FILE}, ("connection", "file"), DESTRUCTIVE),
+    ("kill_process", "Stop the query of a process, or with hard=true close its connection.",
+     {"connection": CONNECTION, "process_id": PROCESS,
+      "hard": {"type": "boolean", "description": "Close the connection, not only stop the query."}},
+     ("connection", "process_id"), DESTRUCTIVE),
+    ("change_user", "Create, alter, drop, grant or revoke a user. See preview_user_change first.",
+     {"connection": CONNECTION, "op": USER_OP, "spec": SPEC}, ("connection", "op", "spec"), DESTRUCTIVE),
+    ("delete_saved_query", "Delete a saved query.",
+     {"query_id": {"type": "string", "description": "Id, as listed by list_saved_queries."}}, ("query_id",),
+     DESTRUCTIVE),
+    ("delete_connection", "Delete a saved connection and its stored secrets. Read-only and production connections "
+     "are refused.", {"connection": CONNECTION},
+     ("connection",), DESTRUCTIVE),
 )
 
 PUBLIC_CONNECTION = ("id", "name", "engine", "tag", "readonly", "host", "port", "database", "folder")
@@ -196,6 +227,40 @@ class AdminTools:
         copy = self.helper.sessions.store.duplicate(self.saved_connection(connection)["id"])
         return {key: copy[key] for key in PUBLIC_CONNECTION if key in copy}
 
+    # destructive --------------------------------------------------------------
+    def tool_drop_object(self, connection, schema, name, kind, database=None, table=None, signature=None):
+        sid = self.session(connection, database)
+        if kind in ("table", "view"):
+            return self.methods["table.drop"](session=sid, schema=schema, table=name, kind=kind)
+        return self.methods["schema.drop_object"](session=sid, schema=schema, name=name, kind=kind, table=table,
+                                                  signature=signature)
+
+    def tool_truncate_table(self, connection, schema, table, database=None):
+        return self.methods["table.truncate"](session=self.session(connection, database), schema=schema, table=table)
+
+    def tool_drop_database(self, connection, name):
+        return self.methods["db.drop"](session=self.session(connection), name=name)
+
+    def tool_restore_database(self, connection, file, database=None):
+        session = self.session(connection, database)
+        return self.methods["db.restore"](session=session, path=self.files.vouched(file))
+
+    def tool_kill_process(self, connection, process_id, hard=False):
+        return self.methods["server.kill"](session=self.session(connection), id=process_id, hard=hard)
+
+    def tool_change_user(self, connection, op, spec):
+        return self.methods["users.change"](session=self.session(connection), op=op, spec=self.without_secret(spec))
+
+    def tool_delete_saved_query(self, query_id):
+        return self.methods["query.delete_saved"](id=query_id)
+
+    def tool_delete_connection(self, connection):
+        conn = self.saved_connection(connection)
+        self.refuse_protected(conn)
+        self.drop_sessions_of(conn["id"])
+        self.helper.sessions.store.delete(conn["id"])
+        return {"ok": True}
+
     # guards -------------------------------------------------------------------
     def refuse_unknown_host(self, host):
         """A connection without a password gets one from ~/.pgpass or PGPASSWORD, for whatever host it names."""
@@ -211,6 +276,15 @@ class AdminTools:
             return host.lower() == "localhost" or ipaddress.ip_address(host).is_loopback
         except ValueError:
             return False
+
+    @staticmethod
+    def refuse_protected(conn):
+        """The helper has no method that gates a connection's own removal, so this does what ask() does."""
+        name = conn.get("name") or "This connection"
+        if conn.get("readonly"):
+            raise Error("readonly", f"{name} is read-only, so MCP does not allow deleting it. Do it in the OmaTablePlus window.")
+        if conn.get("tag") == "production":
+            raise Error("confirm", f"{name} is tagged production and MCP cannot confirm deleting it.")
 
     @staticmethod
     def without_secret(spec):
