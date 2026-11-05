@@ -61,6 +61,15 @@ class StoreTest(unittest.TestCase):
         self.assertNotIn("s3cret", json.dumps(self.raw()))
         self.assertEqual(self.ring.items[(saved["id"], "db")], "s3cret")
 
+    def test_tls_and_mongo_auth_source_are_kept(self):
+        saved = self.store.save({**PG, "tls": "require", "auth_source": "admin"})
+        self.assertEqual(saved["tls"], "require")
+        self.assertNotIn("auth_source", saved)
+        mongo = self.store.save({"name": "M", "engine": "mongodb", "host": "h", "auth_source": "admin"})
+        self.assertEqual(mongo["auth_source"], "admin")
+        mongo = self.store.save({"name": "M", "engine": "mongodb", "host": "h", "id": mongo["id"]})
+        self.assertEqual(mongo["auth_source"], "")
+
     def test_file_permissions(self):
         self.store.save(PG)
         self.assertEqual(stat.S_IMODE(os.stat(self.dir).st_mode), 0o700)

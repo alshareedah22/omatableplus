@@ -1,4 +1,4 @@
-"""Runs the editor's JavaScript checks (tests/js/*.test.js: autocomplete, formatter) with node, when node is installed."""
+"""Runs the editor's JavaScript checks (tests/js/*.test.js: autocomplete, formatter, database URLs) with node, when node is installed."""
 
 import os
 import shutil
@@ -21,6 +21,9 @@ class CompleteTest(unittest.TestCase):
 
     def test_format_js(self):
         self.run_js("format.test.js")
+
+    def test_dburl_js(self):
+        self.run_js("dburl.test.js")
 
 
 if __name__ == "__main__":

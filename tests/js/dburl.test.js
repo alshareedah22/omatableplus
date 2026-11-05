@@ -1,0 +1,41 @@
+// Run by tests/test_complete.py with node.
+const assert = require("assert")
+const parse = (() => {
+  const fs = require("fs"), path = require("path")
+  const src = fs.readFileSync(path.join(__dirname, "../../qml/DbUrl.js"), "utf8").replace(/^\.pragma library\s*$/m, "")
+  return new Function(src + "\nreturn parse")()
+})()
+const eq = (url, want) => assert.deepStrictEqual(parse(url), want, url)
+const err = (url) => assert.ok(parse(url).error, url)
+
+eq("postgres://alice:s%40cret@db.example.com:6543/app?sslmode=verify-full",
+  { engine: "postgresql", user: "alice", password: "s@cret", host: "db.example.com", port: 6543, database: "app", tls: "require" })
+eq("postgresql+psycopg://u@localhost/x", { engine: "postgresql", user: "u", host: "localhost", database: "x" })
+eq("DATABASE_URL=\"postgresql://h/d?sslmode=disable\"", { engine: "postgresql", host: "h", database: "d", tls: "disable" })
+eq("export DATABASE_URL='postgres://h'", { engine: "postgresql", host: "h" })
+eq("postgresql:///mydb?host=db1&port=5433&user=bob&password=pw",
+  { engine: "postgresql", database: "mydb", host: "db1", port: 5433, user: "bob", password: "pw" })
+eq("postgresql://h1:5432,h2:5433/d", { engine: "postgresql", host: "h1", port: 5432, database: "d" })
+eq("postgres://[::1]:5432/d", { engine: "postgresql", host: "::1", port: 5432, database: "d" })
+eq("jdbc:mysql://root:p:w@127.0.0.1:3307/shop?ssl-mode=REQUIRED",
+  { engine: "mysql", user: "root", password: "p:w", host: "127.0.0.1", port: 3307, database: "shop", tls: "require" })
+eq("mysql+pymysql://u:@h/d", { engine: "mysql", user: "u", password: "", host: "h", database: "d" })
+eq("mariadb://h", { engine: "mariadb", host: "h" })
+eq("redis://:pw@cache:6380/2", { engine: "redis", password: "pw", host: "cache", port: 6380, database: "2" })
+eq("rediss://default:pw@cache", { engine: "redis", user: "default", password: "pw", host: "cache", tls: "require" })
+eq("valkey://h?db=3", { engine: "valkey", host: "h", database: "3" })
+eq("mongodb://u:p@m1:27017,m2:27017/app?authSource=admin&tls=true",
+  { engine: "mongodb", user: "u", password: "p", host: "m1", port: 27017, database: "app", auth_source: "admin", tls: "require" })
+eq("sqlite:////home/me/app.db", { engine: "sqlite", path: "/home/me/app.db" })
+eq("sqlite:///home/me/app.db", { engine: "sqlite", path: "/home/me/app.db" })
+eq("sqlite:~/my%20db.sqlite", { engine: "sqlite", path: "~/my db.sqlite" })
+eq("file:/tmp/x.db?mode=ro", { engine: "sqlite", path: "/tmp/x.db" })
+err("")
+err("db.example.com:5432")
+err("oracle://h/x")
+err("mongodb+srv://cluster.example.net/app")
+err("postgres://h:99999/x")
+err("redis://h/abc")
+err("mysql:h/x")
+err("sqlite://")
+console.log("ok")

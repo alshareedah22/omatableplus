@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui as Ui
+import "DbUrl.js" as DbUrl
 
 // Create or edit one connection. Passwords are only sent when typed, so an
 // untouched field keeps the saved one.
@@ -28,11 +29,15 @@ Flickable {
     { id: "mongodb", title: "MongoDB", port: 27017 }]
   readonly property var tags: ["local", "development", "staging", "production"]
   readonly property var sshAuths: ["agent", "key", "password"]
+  readonly property var tlsModes: ["prefer", "require", "disable"]
   readonly property string engine: engineBox.value
   readonly property bool isNew: !conn || !conn.id
   readonly property bool fromOmadb: !!conn && conn.source === "omadb"
   property string testText: ""
   property bool testOk: false
+  property string authSource: ""   // MongoDB only, from an imported URL
+  property string urlText: ""      // result of the last URL import
+  property bool urlOpen: false     // the URL field is shown
 
   contentHeight: body.implicitHeight + 32
   clip: true
@@ -43,6 +48,11 @@ Flickable {
     const v = c || {}
     nameField.setText(v.name || "")
     testText = ""
+    urlText = ""
+    urlOpen = false
+    urlField.setText("")
+    authSource = v.auth_source || ""
+    tlsBox.value = v.tls || "prefer"
     engineBox.value = v.engine || "postgresql"
     hostField.setText(v.host || "127.0.0.1")
     portField.setText(v.port ? String(v.port) : String(engineInfo(engineBox.value).port))
@@ -67,6 +77,43 @@ Flickable {
     nameField.focusInput()
   }
 
+  // Fill the form from a pasted database URL. The URL replaces the connection
+  // fields; name, tag, folder and SSH stay as they are.
+  function importUrl() {
+    const u = DbUrl.parse(urlField.text)
+    if (u.error) { urlText = u.error; return }
+    urlText = ""
+    errorText = ""
+    testText = ""
+    engineBox.value = u.engine
+    if (u.engine === "sqlite") {
+      pathField.setText(u.path)
+    } else {
+      hostField.setText(u.host || "127.0.0.1")
+      portField.setText(String(u.port || engineInfo(u.engine).port))
+      userField.setText(u.user || "")
+      passField.setText(u.password || "")
+      passField.dirty = u.password !== undefined
+      dbField.setText(u.database || "")
+      tlsBox.value = u.tls || "prefer"
+      authSource = u.auth_source || ""
+    }
+    if (!nameField.text) {
+      const where = u.engine === "sqlite" ? u.path.replace(/^.*\//, "") : (u.host || "localhost")
+      nameField.setText(u.database && u.engine !== "redis" && u.engine !== "valkey" ? u.database + " @ " + where : where)
+    }
+    urlField.setText("")
+    urlOpen = false
+    urlText = "Filled in from the URL: check the fields, then Save"
+    nameField.focusInput()
+  }
+
+  function toggleUrl() {
+    urlOpen = !urlOpen
+    urlText = ""
+    if (urlOpen) urlField.focusInput(); else nameField.focusInput()
+  }
+
   function engineInfo(id) {
     return engines.find(function(e) { return e.id === id }) || engines[0]
   }
@@ -76,6 +123,7 @@ Flickable {
       name: nameField.text, engine: engine, host: hostField.text, port: parseInt(portField.text) || 0,
       user: userField.text, database: dbField.text, path: pathField.text,
       tag: tagBox.value, color: colorField.text || null, folder: folderField.text, readonly: readonlySwitch.checked,
+      tls: tlsBox.value, auth_source: engine === "mongodb" ? authSource : "",
       ssh: sshSwitch.checked ? { enabled: true, host: sshHost.text, port: parseInt(sshPort.text) || 22,
         user: sshUser.text, auth: sshAuthBox.value, key_path: sshKey.text } : null
     }
@@ -121,13 +169,57 @@ Flickable {
     width: form.width - 32
     spacing: 12
 
+    RowLayout {
+      Layout.fillWidth: true
+      spacing: 8
+      Text {
+        Layout.fillWidth: true
+        textFormat: Text.PlainText
+        text: form.fromOmadb ? "OmaDBngin server · " + form.conn.name : form.isNew ? "New connection" : "Edit connection"
+        color: Commons.Color.foreground
+        elide: Text.ElideRight
+        font.family: Style.font.family
+        font.pixelSize: Style.font.body * 1.4
+        font.bold: true
+      }
+      Ui.Button {
+        visible: form.isNew && !form.fromOmadb
+        text: form.urlOpen ? "Hide URL import" : "Import from URL…"
+        tooltipText: "Fill the form from a postgres://, mysql://, redis://, mongodb:// or sqlite:// URL"
+        onClicked: form.toggleUrl()
+      }
+    }
+
+    RowLayout {
+      Layout.fillWidth: true
+      spacing: 8
+      visible: form.urlOpen && form.isNew && !form.fromOmadb
+      Field {
+        id: urlField
+        label: "Database URL (Enter to fill in the form, Esc to close)"
+        Layout.fillWidth: true
+        placeholder: "postgres://user:password@host:5432/database"
+        onAccepted: form.importUrl()
+        Keys.onEscapePressed: form.toggleUrl()
+      }
+      Ui.Button {
+        Layout.alignment: Qt.AlignBottom
+        Layout.preferredHeight: urlField.inputHeight
+        bordered: true
+        text: "Import"
+        enabled: urlField.text.trim() !== ""
+        onClicked: form.importUrl()
+      }
+    }
     Text {
       textFormat: Text.PlainText
-      text: form.fromOmadb ? "OmaDBngin server · " + form.conn.name : form.isNew ? "New connection" : "Edit connection"
-      color: Commons.Color.foreground
+      Layout.fillWidth: true
+      visible: form.urlText !== "" && form.isNew && !form.fromOmadb
+      text: form.urlText
+      color: form.urlText.indexOf("Filled in") === 0 ? Commons.Color.accent : Commons.Color.urgent
+      wrapMode: Text.Wrap
       font.family: Style.font.family
-      font.pixelSize: Style.font.body * 1.4
-      font.bold: true
+      font.pixelSize: Style.font.bodySmall
     }
 
     Field { id: nameField; label: "Name"; Layout.fillWidth: true; placeholder: "My database" }
@@ -177,11 +269,21 @@ Flickable {
       Field { id: passField; label: "Password"; Layout.fillWidth: true; secret: true }
     }
 
-    Field {
-      id: dbField
+    RowLayout {
       Layout.fillWidth: true
+      spacing: 12
       visible: form.engine !== "sqlite"
-      label: form.engine === "redis" || form.engine === "valkey" ? "Database index" : "Database"
+      Field {
+        id: dbField
+        Layout.fillWidth: true
+        label: form.engine === "redis" || form.engine === "valkey" ? "Database index" : "Database"
+      }
+      Column {
+        spacing: 4
+        Layout.preferredWidth: 110
+        Text { textFormat: Text.PlainText; text: "TLS"; color: Commons.Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
+        Ui.Dropdown { id: tlsBox; width: parent.width; showLabel: false; value: "prefer"; options: form.tlsModes }
+      }
     }
 
     Text {
