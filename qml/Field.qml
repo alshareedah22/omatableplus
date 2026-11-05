@@ -11,6 +11,11 @@ Item {
   property alias placeholder: input.placeholderText
   property bool secret: false
   property bool dirty: false
+  readonly property real inputHeight: input.height   // to line a button up with the input
+  readonly property bool inputFocused: input.activeFocus
+  readonly property Item inputItem: input
+  property real minInputHeight: 0    // match a taller neighbour, e.g. a dropdown
+  property real trailingSpace: 0     // room kept free at the right of the input
 
   // Equal implicit widths so a RowLayout splits the row evenly between fields.
   implicitWidth: 200
@@ -35,6 +40,8 @@ Item {
     TextField {
       id: input
       width: column.width
+      height: Math.max(implicitHeight, field.minInputHeight)
+      rightPadding: leftPadding + field.trailingSpace
       echoMode: field.secret ? TextInput.Password : TextInput.Normal
       color: Commons.Color.foreground
       placeholderTextColor: Commons.Color.muted
