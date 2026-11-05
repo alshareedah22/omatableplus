@@ -137,6 +137,8 @@ def validate(conn):
         raise Error("invalid", "host is required")
     port = conn.get("port")
     out["port"] = _port(DEFAULT_PORTS[engine] if port in (None, "") else port)
+    if engine == "mongodb":
+        out["auth_source"] = _str(conn, "auth_source", 128)
     ssh = conn.get("ssh")
     if ssh and ssh.get("enabled"):
         tunnel = {"enabled": True, "host": _str(ssh, "host"), "port": _port(ssh.get("port") or 22, "SSH port"),
@@ -245,6 +247,9 @@ class Store:
             if conn_id:
                 stored = self._find(conns, conn_id)
                 stored.update(fields)
+                if "auth_source" not in fields:
+                    # no longer MongoDB: do not bring an old auth database back later
+                    stored.pop("auth_source", None)
             else:
                 stored = {"id": uuid.uuid4().hex[:12], **fields}
                 conns.append(stored)

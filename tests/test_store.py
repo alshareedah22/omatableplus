@@ -61,6 +61,22 @@ class StoreTest(unittest.TestCase):
         self.assertNotIn("s3cret", json.dumps(self.raw()))
         self.assertEqual(self.ring.items[(saved["id"], "db")], "s3cret")
 
+    def test_tls_and_mongo_auth_source_are_kept(self):
+        cid = self.store.save({**PG, "tls": "require", "auth_source": "admin"})["id"]
+        saved = Store(self.dir, self.ring).get(cid)   # read back from disk
+        self.assertEqual(saved["tls"], "require")
+        self.assertNotIn("auth_source", saved)
+        mid = self.store.save({"name": "M", "engine": "mongodb", "host": "h", "auth_source": "admin"})["id"]
+        self.assertEqual(Store(self.dir, self.ring).get(mid)["auth_source"], "admin")
+        self.store.save({"name": "M", "engine": "mongodb", "host": "h", "id": mid})
+        self.assertEqual(Store(self.dir, self.ring).get(mid)["auth_source"], "")
+
+    def test_auth_source_dropped_when_no_longer_mongo(self):
+        mid = self.store.save({"name": "M", "engine": "mongodb", "host": "h", "auth_source": "admin"})["id"]
+        self.store.save({**PG, "id": mid})
+        self.assertNotIn("auth_source", Store(self.dir, self.ring).get(mid))
+        self.assertNotIn("auth_source", self.raw()[0])
+
     def test_file_permissions(self):
         self.store.save(PG)
         self.assertEqual(stat.S_IMODE(os.stat(self.dir).st_mode), 0o700)

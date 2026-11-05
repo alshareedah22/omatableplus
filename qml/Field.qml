@@ -11,6 +11,9 @@ Item {
   property alias placeholder: input.placeholderText
   property bool secret: false
   property bool dirty: false
+  readonly property real inputHeight: input.height   // to line a button up with the input
+
+  signal accepted()
 
   // Equal implicit widths so a RowLayout splits the row evenly between fields.
   implicitWidth: 200
@@ -41,6 +44,7 @@ Item {
       font.family: Style.font.family
       font.pixelSize: Style.font.body
       onTextEdited: field.dirty = true
+      onAccepted: field.accepted()
       background: Rectangle {
         color: Qt.lighter(Commons.Color.background, 1.25)
         border.color: input.activeFocus ? Commons.Color.accent : Qt.lighter(Commons.Color.background, 1.6)
