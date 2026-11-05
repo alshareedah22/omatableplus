@@ -44,6 +44,22 @@ class ProtocolTest(Fixture):
         reply = self.client.raw("{nope")[0]
         self.assertEqual((reply["id"], reply["error"]["code"]), (None, -32700))
 
+    def test_a_malformed_request_is_answered_and_does_not_stop_the_server(self):
+        for line, code in (('{"jsonrpc":"2.0","id":1,"method":["tools/list"]}', -32600),
+                           ('{"jsonrpc":"2.0","id":2,"method":{"a":1}}', -32600),
+                           ('{"jsonrpc":"2.0","id":3,"method":7}', -32600),
+                           ('{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":["execute_sql"]}}', -32602),
+                           ('{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":{"x":1}}}', -32602)):
+            reply = self.client.raw(line)[0]
+            self.assertEqual((reply["id"], reply["error"]["code"]), (int(line.split('"id":')[1][0]), code), line)
+        self.assertEqual(self.client.send("ping")["result"], {})
+
+    def test_whatever_a_handler_raises_is_an_internal_error_not_the_end_of_the_server(self):
+        self.client.server.requests["boom"] = lambda params: 1 / 0
+        reply = self.client.raw('{"jsonrpc":"2.0","id":9,"method":"boom"}')[0]
+        self.assertEqual((reply["id"], reply["error"]["code"]), (9, -32603))
+        self.assertEqual(self.client.send("ping")["result"], {})
+
     def test_unknown_tool_is_a_protocol_error(self):
         reply = self.client.send("tools/call", {"name": "format_disk", "arguments": {}})
         self.assertEqual(reply["error"]["code"], -32602)

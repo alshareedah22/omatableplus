@@ -154,6 +154,8 @@ class McpServer(AdminTools, NosqlTools):
         if "method" not in message or "id" not in message:
             return      # a notification, or the answer to a request this server never sent
         rid = message["id"]
+        if not isinstance(message["method"], str):
+            return self.send({"id": rid, "error": {"code": -32600, "message": "Invalid request: method must be a string"}})
         handler = self.requests.get(message["method"])
         if handler is None:
             return self.send({"id": rid, "error": {"code": -32601, "message": f"Method not found: {message['method']}"}})
@@ -164,6 +166,8 @@ class McpServer(AdminTools, NosqlTools):
             result = handler(params)
         except RpcError as e:
             self.send({"id": rid, "error": {"code": e.code, "message": e.message}})
+        except Exception as e:  # noqa: BLE001 - one bad message must not end the server the client is talking to
+            self.send({"id": rid, "error": {"code": -32603, "message": f"Internal error: {type(e).__name__}: {e}"}})
         else:
             self.send({"id": rid, "result": result})
 
@@ -193,7 +197,7 @@ class McpServer(AdminTools, NosqlTools):
 
     def tools_call(self, params):
         name = params.get("name")
-        if name not in self.tools:
+        if not isinstance(name, str) or name not in self.tools:
             raise RpcError(-32602, f"Unknown tool: {name}")
         try:
             arguments = params.get("arguments") or {}
