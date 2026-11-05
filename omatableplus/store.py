@@ -247,6 +247,9 @@ class Store:
             if conn_id:
                 stored = self._find(conns, conn_id)
                 stored.update(fields)
+                if "auth_source" not in fields:
+                    # no longer MongoDB: do not bring an old auth database back later
+                    stored.pop("auth_source", None)
             else:
                 stored = {"id": uuid.uuid4().hex[:12], **fields}
                 conns.append(stored)

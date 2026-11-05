@@ -37,6 +37,7 @@ Flickable {
   property bool testOk: false
   property string authSource: ""   // MongoDB only, from an imported URL
   property string urlText: ""      // result of the last URL import
+  property bool urlOk: false       // urlText is a plain success (no error or warning)
   property bool urlOpen: false     // the URL field is shown
 
   contentHeight: body.implicitHeight + 32
@@ -80,14 +81,22 @@ Flickable {
   // Fill the form from a pasted database URL. The URL replaces the connection
   // fields; name, tag, folder and SSH stay as they are.
   function importUrl() {
+    if (busy) return   // a pending save reloads the form when it answers
     const u = DbUrl.parse(urlField.text)
-    if (u.error) { urlText = u.error; return }
+    if (u.error) { urlText = u.error; urlOk = false; return }
     urlText = ""
     errorText = ""
     testText = ""
     engineBox.value = u.engine
     if (u.engine === "sqlite") {
       pathField.setText(u.path)
+      // nothing from an earlier server URL is kept on a SQLite connection
+      userField.setText("")
+      passField.setText("")
+      passField.dirty = true
+      dbField.setText("")
+      tlsBox.value = "prefer"
+      authSource = ""
     } else {
       hostField.setText(u.host || "127.0.0.1")
       portField.setText(String(u.port || engineInfo(u.engine).port))
@@ -98,13 +107,16 @@ Flickable {
       tlsBox.value = u.tls || "prefer"
       authSource = u.auth_source || ""
     }
+    if (u.readonly) readonlySwitch.checked = true
     if (!nameField.text) {
       const where = u.engine === "sqlite" ? u.path.replace(/^.*\//, "") : (u.host || "localhost")
       nameField.setText(u.database && u.engine !== "redis" && u.engine !== "valkey" ? u.database + " @ " + where : where)
     }
     urlField.setText("")
     urlOpen = false
-    urlText = "Filled in from the URL: check the fields, then Save"
+    const warnings = u.warnings || []
+    urlOk = warnings.length === 0
+    urlText = ["Filled in from the URL: check the fields, then Save"].concat(warnings).join("\n")
     nameField.focusInput()
   }
 
@@ -207,7 +219,7 @@ Flickable {
         Layout.preferredHeight: urlField.inputHeight
         bordered: true
         text: "Import"
-        enabled: urlField.text.trim() !== ""
+        enabled: !form.busy && urlField.text.trim() !== ""
         onClicked: form.importUrl()
       }
     }
@@ -216,7 +228,7 @@ Flickable {
       Layout.fillWidth: true
       visible: form.urlText !== "" && form.isNew && !form.fromOmadb
       text: form.urlText
-      color: form.urlText.indexOf("Filled in") === 0 ? Commons.Color.accent : Commons.Color.urgent
+      color: form.urlOk ? Commons.Color.accent : Commons.Color.urgent
       wrapMode: Text.Wrap
       font.family: Style.font.family
       font.pixelSize: Style.font.bodySmall

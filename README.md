@@ -31,9 +31,11 @@ Redis/Valkey and a document browser for MongoDB.
 
 - Double-click a connection (or select it and press **Connect**). **Test** tries the form as typed.
 - A new connection can start from a database URL: paste `postgres://user:pass@host:5432/db` (also `mysql://`,
-  `mariadb://`, `redis://`/`rediss://`, `valkey://`, `mongodb://`, `sqlite:///path`, or a whole `DATABASE_URL=…` line)
+  `mariadb://`, `redis://`/`rediss://`, `valkey://`, `mongodb://`, `sqlite:////absolute/path`, or a whole `DATABASE_URL=…` line)
   into **Import from URL** and press Enter. It fills in engine, host, port, user, password, database and TLS
-  (`sslmode`, `ssl-mode`, `ssl`/`tls`, `rediss://`); `mongodb+srv://` is not supported.
+  (`sslmode`, `ssl-mode`, `ssl`/`tls`, `rediss://`); `mongodb+srv://` is not supported. It warns when the URL asks for
+  something the connection will not do as written: certificate verification (`verify-full`: the connection is
+  encrypted, the certificate is not checked) or a relative SQLite path.
 - **Folder** in a connection's form groups it in the list (click a folder to fold it). **Read-only** makes a
   connection browse-and-query only: OmaTablePlus refuses every change before it is sent, and the server session is
   read-only too (PostgreSQL `default_transaction_read_only`, MySQL `SET SESSION TRANSACTION READ ONLY`, SQLite

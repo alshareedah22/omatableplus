@@ -2,8 +2,9 @@
 
 // Parse a database URL (postgres://…, mysql://…, redis://…, mongodb://…,
 // sqlite:///…) into connection form fields. Returns
-// { engine, host, port, user, password, database, path, tls, auth_source }
-// with only the parts the URL names, or { error: "…" }.
+// { engine, host, port, user, password, database, path, tls, auth_source, readonly, warnings }
+// with only the parts the URL names, or { error: "…" }. `warnings` lists what
+// the URL asks for that the connection will not do as written.
 
 var SCHEMES = {
   postgres: "postgresql", postgresql: "postgresql", pg: "postgresql", pgsql: "postgresql",
@@ -13,11 +14,8 @@ var SCHEMES = {
   sqlite: "sqlite", sqlite3: "sqlite", file: "sqlite"
 }
 
+// "+" stays a plus: database URLs are not form-encoded (libpq, MySQL, Mongo)
 function decode(s) {
-  try { return decodeURIComponent(s.replace(/\+/g, "%20")) } catch (e) { return s }
-}
-
-function decodePart(s) {
   try { return decodeURIComponent(s) } catch (e) { return s }
 }
 
@@ -36,8 +34,10 @@ function query(qs) {
 function truthy(v) { return /^(1|true|yes|on|require|required)$/i.test(v || "") }
 
 // libpq sslmode, MySQL ssl-mode, ssl=true / tls=true
+function tlsMode(q) { return (q.sslmode || q["ssl-mode"] || q.ssl_mode || "").toLowerCase() }
+
 function tlsFrom(q) {
-  var mode = (q.sslmode || q["ssl-mode"] || q.ssl_mode || "").toLowerCase()
+  var mode = tlsMode(q)
   if (mode) {
     if (mode === "disable" || mode === "disabled") return "disable"
     if (mode === "allow" || mode === "prefer" || mode === "preferred") return "prefer"
@@ -73,10 +73,22 @@ function parse(text) {
   if (qi >= 0) rest = rest.slice(0, qi)
 
   if (engine === "sqlite") {
-    // sqlite:///abs, sqlite:////abs, file:/abs, file:./rel, sqlite:~/x.db
-    var p = decodePart(rest.replace(/^\/\/(localhost)?(?=\/)/, "").replace(/^\/\//, "/"))
+    var p
+    if (scheme === "file") {
+      // RFC 8089: file:///abs, file://localhost/abs, file:/abs; also file:./rel
+      p = rest.replace(/^\/\/(localhost)?(?=\/)/, "")
+    } else if (rest.slice(0, 3) === "///") {
+      // SQLAlchemy: sqlite:///relative.db, sqlite:////absolute.db
+      p = rest.slice(3)
+    } else {
+      p = rest.replace(/^\/\//, "")   // sqlite:~/x.db, sqlite:/abs
+    }
+    p = decode(p)
     if (!p || p === "/") return { error: "The URL has no database file" }
     out.path = p
+    if (p.charAt(0) !== "/" && p.charAt(0) !== "~")
+      out.warnings = ["The URL names a relative path (" + p + "): set the full path to the file"]
+    if ((q.mode || "").toLowerCase() === "ro" || truthy(q.immutable)) out.readonly = true
     return out
   }
 
@@ -91,24 +103,33 @@ function parse(text) {
     var cred = authority.slice(0, at)
     authority = authority.slice(at + 1)
     var colon = cred.indexOf(":")
-    var user = decodePart(colon >= 0 ? cred.slice(0, colon) : cred)
+    var user = decode(colon >= 0 ? cred.slice(0, colon) : cred)
     if (user) out.user = user
-    if (colon >= 0) out.password = decodePart(cred.slice(colon + 1))
+    if (colon >= 0) out.password = decode(cred.slice(colon + 1))
   }
 
   // several hosts (replica sets, libpq failover): use the first
   var hostport = authority.split(",")[0]
   var hm = /^\[([^\]]*)\](?::(\d*))?$/.exec(hostport) || /^([^:]*)(?::(\d*))?$/.exec(hostport)
   if (!hm) return { error: "Could not read the host and port" }
-  if (hm[1]) out.host = decodePart(hm[1])
-  if (hm[2]) out.port = parseInt(hm[2], 10)
+  if (hm[1]) out.host = decode(hm[1])
+  if (hm[2]) out.port = parseInt(hm[2], 10)   // "host:" (no digits) means the default
 
-  var db = decodePart(path.replace(/\/+$/, ""))
+  var db = decode(path.replace(/\/+$/, ""))
   if (db) out.database = db
 
-  // libpq lets everything come from the query string instead
-  if (q.host && !out.host && q.host.charAt(0) !== "/") out.host = q.host
-  if (q.port && !out.port) out.port = parseInt(q.port, 10) || undefined
+  // libpq lets everything come from the query string instead; a host that is
+  // a path is a PostgreSQL Unix socket directory, which libpq takes as the host
+  if (q.host && !out.host) {
+    if (q.host.charAt(0) !== "/") out.host = q.host.split(",")[0]
+    else if (engine === "postgresql") out.host = q.host
+    else return { error: "Unix socket hosts are only supported for PostgreSQL" }
+  }
+  if (q.port !== undefined && out.port === undefined) {
+    var qport = q.port.split(",")[0]
+    if (!/^\d+$/.test(qport)) return { error: "The port must be a number" }
+    out.port = parseInt(qport, 10)
+  }
   if ((q.user || q.username) && !out.user) out.user = q.user || q.username
   if (q.password !== undefined && out.password === undefined) out.password = q.password
   if ((q.dbname || q.database) && !out.database) out.database = q.dbname || q.database
@@ -119,10 +140,17 @@ function parse(text) {
   var tls = tlsFrom(q)
   if (scheme === "rediss" || scheme === "valkeys") tls = "require"
   if (tls) out.tls = tls
+  if (/^verify/.test(tlsMode(q)))
+    out.warnings = ["The URL asks to verify the server certificate (" + tlsMode(q) + "): OmaTablePlus " +
+      "encrypts the connection (TLS require) but does not check the certificate"]
   if (engine === "redis" || engine === "valkey") {
     if (q.db && !out.database) out.database = q.db
     if (out.database && !/^\d+$/.test(out.database)) return { error: "The Redis database must be a number" }
   }
-  if (engine === "mongodb" && q.authsource) out.auth_source = q.authsource
+  // MongoDB authenticates against authSource, else the URL's database, else admin
+  if (engine === "mongodb") {
+    if (q.authsource) out.auth_source = q.authsource
+    else if (out.user && out.database) out.auth_source = out.database
+  }
   return out
 }
