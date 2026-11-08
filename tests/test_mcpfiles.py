@@ -198,11 +198,11 @@ class SandboxTest(unittest.TestCase):
             self.assertEqual(self.code(self.box.vouch, name), "invalid", name)
 
     def test_glance_tells_size_first_lines_and_the_lines_a_client_would_run(self):
-        self.written("dump.sql", b"-- dump\n\\connect app\nCOPY t FROM stdin;\n\\N\tx\n\\.\n"
-                                 b"\\! touch /tmp/pwned\nSYSTEM id\n\\. other.sql\nsource other.sql\nSELECT 1;\n")
+        dump = (b"-- dump\n\\connect app\nCOPY t FROM stdin;\n\\N\tx\n\\.\n"
+                b"\\! touch /tmp/pwned\nSYSTEM id\n\\. other.sql\nsource other.sql\nSELECT 1;\n")
+        self.written("dump.sql", dump)
         text = glance(self.box.existing("dump.sql"))
-        self.assertIn("dump.sql", text)
-        self.assertIn("10 lines", text)
+        self.assertEqual(text.splitlines()[0], f"dump.sql: {len(dump)} bytes, 10 lines")
         self.assertIn("-- dump", text)
         for run in ("\\! touch /tmp/pwned", "SYSTEM id", "\\. other.sql", "source other.sql"):
             self.assertIn(run, text.split("run as commands", 1)[1], run)
@@ -214,6 +214,7 @@ class SandboxTest(unittest.TestCase):
         text = glance(self.box.existing("plain.sql"))
         self.assertNotIn("run as commands", text)
         self.assertLess(len(text), 1000)
+        self.assertEqual(text.splitlines()[2:], ["  SELECT 1;", "  " + "x" * 100 + "..."])
 
     def leftovers(self):
         return [name for name in os.listdir(self.root) if name.startswith(".restore")]
