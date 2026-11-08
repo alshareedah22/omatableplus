@@ -12,6 +12,10 @@ from .protocol import Error
 
 FILE_STATEMENTS = {"ATTACH", "COPY", "LOAD"}      # SQLite ATTACH opens or creates a file; COPY, LOAD DATA read or write one
 FILE_CLAUSES = {"OUTFILE", "DUMPFILE"}            # SELECT ... INTO OUTFILE
+# Called from a plain SELECT, these read (or write) a file of the machine the database runs on
+FILE_FUNCTIONS = {"LOAD_FILE", "PG_READ_FILE", "PG_READ_BINARY_FILE", "PG_LS_DIR", "PG_STAT_FILE", "LO_IMPORT",
+                  "LO_EXPORT"}
+QUOTES = '"`['
 READS = {"SELECT", "WITH", "VALUES", "TABLE"}
 DESTRUCTIVE = {"DROP", "TRUNCATE", "GRANT", "REVOKE"}
 OPAQUE = {"PREPARE", "EXECUTE", "DO"}              # run text or code this check cannot read: PREPARE ... FROM 'DROP ...'
@@ -22,12 +26,40 @@ LIFT_READ_ONLY = {"SET_CONFIG", "QUERY_TO_XML", "QUERY_TO_XML_AND_XMLSCHEMA", "Q
                   "TS_STAT"}
 
 
+def words(sql, engine):
+    """The SQL's words in upper case, quoted names included (without their quotes), strings and comments skipped.
+
+    sqlsplit.words skips a quoted name as it skips a string; a guard cannot, because "set_config"(...) is a call.
+    """
+    out, i, n = [], 0, len(sql)
+    while i < n:
+        skip = sqlsplit._comment(sql, i, engine) or sqlsplit._quoted(sql, i, engine)
+        if skip:
+            if sql[i] in QUOTES:
+                out.append(unquoted(sql[i:i + skip]))
+            i += skip
+            continue
+        m = sqlsplit.WORD.match(sql, i)
+        if m and (i == 0 or not sqlsplit._ident(sql[i - 1])):
+            out.append(m.group(0).upper())
+            i = m.end()
+        else:
+            i += 1
+    return out
+
+
+def unquoted(name):
+    """A quoted name without its quotes, in upper case (an unclosed one loses only its opening quote)."""
+    close = "]" if name[0] == "[" else name[0]
+    return (name[1:-1] if len(name) > 1 and name[-1] == close else name[1:]).strip().upper()
+
+
 def statements(sql, engine):
     """(first word, words) of each statement."""
     out = []
     for _, _, statement in sqlsplit.split(sql, engine):
-        words = sqlsplit.words(statement, engine)
-        out.append((words[0] if words else "", words))
+        found = words(statement, engine)
+        out.append((found[0] if found else "", found))
     return out
 
 
@@ -38,12 +70,19 @@ def refuse_hidden_code(sql, engine):
                               "write the statement without one")
 
 
+def outside_the_folder(what):
+    return Error("files", f"{what} would read or create a file outside the MCP files folder; "
+                          "use export_data, backup_database or import_csv, which stay inside it")
+
+
 def refuse_file_effects(sql, engine):
     refuse_hidden_code(sql, engine)
     for first, words in statements(sql, engine):
         if first in FILE_STATEMENTS or (first == "VACUUM" and "INTO" in words) or FILE_CLAUSES.intersection(words):
-            raise Error("files", f"{first} would read or create a file outside the MCP files folder; "
-                                 "use export_data, backup_database or import_csv, which stay inside it")
+            raise outside_the_folder(first)
+        for word in words:
+            if word in FILE_FUNCTIONS:
+                raise outside_the_folder(word)
 
 
 def refuse_session_escapes(sql, engine):
@@ -67,10 +106,12 @@ def refuse_unless_read(sql, engine):
     first, _ = statements(found[0][2], engine)[0]
     if first not in READS or safety.sql_writes([found[0][2]], engine):
         raise Error("invalid", "export_data only runs a query that reads (SELECT, WITH or VALUES)")
+    refuse_file_effects(sql, engine)
 
 
 def refuse_destructive(sql, engine):
     """Without --destructive: no drop, truncate or change of rights, and nothing that hides one."""
+    refuse_hidden_code(sql, engine)
     for first, words in statements(sql, engine):
         if first in DESTRUCTIVE or (first == "ALTER" and "DROP" in words):
             raise Error("destructive", f"{first} is refused without --destructive")
