@@ -324,8 +324,16 @@ class ReadTest(Fixture):
         _, payload = self.client.call("search_schema", connection="Notes", pattern="GADGET")
         self.assertEqual((len(payload["matches"]), payload["truncated"]), (MATCH_LIMIT, True))
         _, payload = self.client.call("search_schema", connection="Notes", pattern="spare")
-        self.assertEqual([len(m["columns"]) for m in payload["matches"]], [MATCH_LIMIT])
+        self.assertEqual(([len(m["columns"]) for m in payload["matches"]], payload["truncated"]), ([MATCH_LIMIT], True))
         self.assertFalse(self.client.call("search_schema", connection="Notes", pattern="notes")[1]["truncated"])
+
+    def test_search_schema_is_complete_when_the_columns_fit_the_limit_exactly(self):
+        db = sqlite3.connect(self.path)
+        db.execute("CREATE TABLE snug (" + ", ".join(f"fit_{n} INTEGER" for n in range(MATCH_LIMIT)) + ")")
+        db.commit()
+        db.close()
+        _, payload = self.client.call("search_schema", connection="Notes", pattern="fit_")
+        self.assertEqual(([len(m["columns"]) for m in payload["matches"]], payload["truncated"]), ([MATCH_LIMIT], False))
 
     def test_explain_sql(self):
         is_error, payload = self.client.call("explain_sql", connection="Notes", sql="SELECT * FROM notes WHERE id = 1")

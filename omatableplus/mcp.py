@@ -286,13 +286,16 @@ class McpServer:
         catalog = self.methods["schema.catalog"](session=self.session(connection, database))
         needle = pattern.lower()
         matches = []
+        cut = False
         for table in catalog["tables"]:
             by_name = needle in table["name"].lower()
             columns = table["columns"] if by_name else [c for c in table["columns"] if needle in c["name"].lower()]
             if by_name or columns:
+                cut = cut or len(columns) > MATCH_LIMIT
                 matches.append({"schema": table["schema"], "table": table["name"], "kind": table["kind"],
                                 "columns": columns[:MATCH_LIMIT]})
-        return {"matches": matches[:MATCH_LIMIT], "truncated": len(matches) > MATCH_LIMIT or catalog["truncated"]}
+        return {"matches": matches[:MATCH_LIMIT],
+                "truncated": cut or len(matches) > MATCH_LIMIT or catalog["truncated"]}
 
     def tool_search_rows(self, connection, schema, table, database=None, filters=None, match="and", sort=None,
                          limit=DEFAULT_ROWS, offset=0):
