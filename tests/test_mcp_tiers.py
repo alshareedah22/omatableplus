@@ -1048,6 +1048,11 @@ class RestoreFromACopyTest(Fixture):
         self.assertEqual(self.restore("by-hand.sql"), (True, "declined"))
         self.assertEqual((self.loaded, self.copies_left()), ([], []))
 
+    def test_a_file_that_vanished_while_the_person_was_asked_is_not_found_not_declined(self):
+        self.accepting(lambda: os.remove(os.path.join(self.files, "by-hand.sql")))
+        self.assertEqual(self.restore("by-hand.sql"), (True, "notfound"))
+        self.assertEqual((self.loaded, self.copies_left()), ([], []))
+
     def test_a_file_swapped_as_it_is_opened_loads_the_bytes_that_were_shown(self):
         self.swap_after_opening("by-hand.sql", "\\! touch /tmp/pwned\n")
         self.accepting()
