@@ -7,6 +7,7 @@ production tag refuse exactly what they refuse in the window; MCP never confirms
 Files are only ever named inside the MCP files folder, see mcpfiles.
 """
 
+import contextlib
 import ipaddress
 import os
 
@@ -246,15 +247,32 @@ class AdminTools:
 
     def tool_restore_database(self, connection, file, database=None):
         session = self.session(connection, database)
-        return self.methods["db.restore"](session=session, path=self.restorable(connection, file, database))
+        with self.restorable(connection, file, database) as copy:
+            return self.methods["db.restore"](session=session, path=copy)
 
+    @contextlib.contextmanager
     def restorable(self, connection, file, database):
-        """backup_database's own files are loaded as they are; any other one only after the person says yes."""
-        if not self.elicits:
-            return self.files.vouched(file)
+        """The private copy to restore, made from the bytes that were hashed, gone when the restore is over.
+
+        backup_database's own files are loaded as they are; any other one only after the person says yes."""
+        path = self.files.existing(file)       # a missing file is notfound, before it is anything else
+        if not self.elicits or self.files.vouches(path):
+            with self.files.verified_copy(file) as copy:
+                yield copy
+            return
+        seen = self.agreed_to(connection, file, database)
+        with contextlib.ExitStack() as stack:
+            try:
+                copy = stack.enter_context(self.files.verified_copy(file, expected=seen))
+            except Error as caught:
+                if caught.code != "invalid":
+                    raise
+                raise Error("declined", f"{file} changed while the person was asked, so it was not loaded") from caught
+            yield copy
+
+    def agreed_to(self, connection, file, database):
+        """Asks the person about a file backup_database did not write; the sha256 of what they were shown."""
         path = self.files.existing(file)
-        if self.files.vouches(path):
-            return path
         conn = self.connection(connection)
         self.refuse_protected(conn, "restoring into")
         seen = digest(path)
@@ -267,9 +285,7 @@ class AdminTools:
         content = asked.get("content")
         if asked.get("action") != "accept" or not isinstance(content, dict) or content.get("restore") is not True:
             raise Error("declined", f"the person at the client did not agree to load {os.path.basename(path)}")
-        if digest(path) != seen:
-            raise Error("declined", f"{os.path.basename(path)} changed while the person was asked, so it was not loaded")
-        return path
+        return seen
 
     def tool_kill_process(self, connection, process_id, hard=False):
         return self.methods["server.kill"](session=self.session(connection), id=process_id, hard=hard)

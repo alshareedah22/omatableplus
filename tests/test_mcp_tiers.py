@@ -18,7 +18,9 @@ from omatableplus import session as session_module
 from omatableplus import sqlgen
 from omatableplus.mcp import DEFAULT_FILES, McpServer
 from omatableplus.mcp import main as mcp_main
+from omatableplus.mcpfiles import Sandbox
 from omatableplus.mcpschema import CELL_LIMIT, MAX_ROWS
+from omatableplus.protocol import Error
 
 READ_TOOLS = {"list_relations", "list_saved_queries", "list_processes", "list_users", "get_user_grants",
               "preview_user_change", "preview_create_table", "preview_alter_table", "preview_import", "list_files",
@@ -949,6 +951,116 @@ class RestoreConfirmationTest(Fixture):
         sent = [json.loads(line) for line in out.getvalue().splitlines()]
         self.assertEqual([m.get("method") or m["id"] for m in sent], [1, "elicitation/create", 2, 3])
         self.assertEqual(self.loaded, ["by-hand.sql"])
+
+
+class RestoreFromACopyTest(Fixture):
+    """The helper restores a private copy of the bytes that were hashed, never the file a path names."""
+    write = True
+    destructive = True
+
+    def setUp(self):
+        super().setUp()
+        self.loaded = []
+        self.breaks = False
+        patch = mock.patch.dict(self.helper.methods, {"db.restore": self.restore_spy})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.put("by-hand.sql", "SELECT 1;\n")
+
+    def restore_spy(self, **kwargs):
+        with open(kwargs["path"], "rb") as f:
+            self.loaded.append({"path": kwargs["path"], "bytes": f.read()})
+        if self.breaks:
+            raise Error("restore", "the restore failed")
+        return {"ms": 0}
+
+    def put(self, name, text):
+        os.makedirs(self.files, exist_ok=True)
+        with open(os.path.join(self.files, name), "w") as f:
+            f.write(text)
+
+    def restore(self, file):
+        is_error, payload = self.client.call("restore_database", connection="Notes", file=file)
+        return is_error, payload.get("error", {}).get("code")
+
+    def copies_left(self):
+        return [name for name in os.listdir(self.files) if name.startswith(".restore-")]
+
+    def accepting(self, before_answer=lambda: None):
+        self.client.can_elicit()
+        self.client.person({"action": "accept", "content": {"restore": True}})
+        answers = self.client.server.inbox
+
+        def answered():
+            before_answer()
+            yield next(answers)
+        self.client.server.inbox = answered()
+
+    def swap_after_opening(self, name, text):
+        opened = Sandbox.open_regular
+
+        def swapping(path):
+            fd = opened(path)
+            if os.path.basename(path) == name:
+                with open(path + ".new", "w") as f:
+                    f.write(text)
+                os.replace(path + ".new", path)
+            return fd
+        patch = mock.patch.object(Sandbox, "open_regular", staticmethod(swapping))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def assert_a_copy(self, original, name):
+        [seen] = self.loaded
+        self.assertNotEqual(seen["path"], os.path.join(self.files, name))
+        self.assertEqual(os.path.basename(seen["path"]), name)
+        self.assertTrue(os.path.basename(os.path.dirname(seen["path"])).startswith(".restore-"), seen["path"])
+        self.assertEqual(seen["bytes"], original)
+
+    def test_a_file_backup_database_wrote_is_restored_from_a_copy(self):
+        self.client.call("backup_database", connection="Notes", file="app.bak")
+        with open(os.path.join(self.files, "app.bak"), "rb") as f:
+            original = f.read()
+        self.assertEqual(self.restore("app.bak"), (False, None))
+        self.assert_a_copy(original, "app.bak")
+
+    def test_a_file_the_person_agreed_to_is_restored_from_a_copy(self):
+        self.accepting()
+        self.assertEqual(self.restore("by-hand.sql"), (False, None))
+        self.assert_a_copy(b"SELECT 1;\n", "by-hand.sql")
+
+    def test_the_copy_is_gone_afterwards_whether_the_restore_worked_or_not(self):
+        self.client.call("backup_database", connection="Notes", file="app.bak")
+        self.assertEqual(self.restore("app.bak"), (False, None))
+        self.breaks = True
+        self.assertEqual(self.restore("app.bak"), (True, "restore"))
+        self.accepting()
+        self.assertEqual(self.restore("by-hand.sql"), (True, "restore"))
+        self.assertEqual((len(self.loaded), self.copies_left()), (3, []))
+        for seen in self.loaded:
+            self.assertFalse(os.path.exists(seen["path"]))
+
+    def test_a_file_replaced_while_the_person_was_asked_is_not_loaded(self):
+        def replace():
+            self.put("other.sql", "\\! touch /tmp/pwned\n")
+            os.replace(os.path.join(self.files, "other.sql"), os.path.join(self.files, "by-hand.sql"))
+        self.accepting(replace)
+        self.assertEqual(self.restore("by-hand.sql"), (True, "declined"))
+        self.assertEqual((self.loaded, self.copies_left()), ([], []))
+
+    def test_a_file_swapped_as_it_is_opened_loads_the_bytes_that_were_shown(self):
+        self.swap_after_opening("by-hand.sql", "\\! touch /tmp/pwned\n")
+        self.accepting()
+        self.assertEqual(self.restore("by-hand.sql"), (False, None))
+        self.assert_a_copy(b"SELECT 1;\n", "by-hand.sql")
+
+    def test_a_backup_swapped_as_it_is_opened_loads_the_bytes_that_were_hashed(self):
+        self.client.call("backup_database", connection="Notes", file="app.bak")
+        with open(os.path.join(self.files, "app.bak"), "rb") as f:
+            original = f.read()
+        self.swap_after_opening("app.bak", "\\! touch /tmp/pwned\n")
+        self.assertEqual(self.restore("app.bak"), (False, None))
+        self.assert_a_copy(original, "app.bak")
 
 
 class ServerAdminTest(Faked):
