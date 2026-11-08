@@ -141,11 +141,16 @@ class McpServer:
             return self.send({"id": None, "error": {"code": -32700, "message": "Parse error"}})
         if not isinstance(message, dict):
             return self.send({"id": None, "error": {"code": -32600, "message": "Invalid request"}})
-        if "method" not in message or "id" not in message:
-            return      # a notification, or the answer to a request this server never sent
-        rid = message["id"]
-        if not isinstance(message["method"], str):
+        rid = message.get("id")
+        if isinstance(rid, (bool, list, dict)):
+            return self.send({"id": None, "error": {"code": -32600,
+                                                    "message": "Invalid request: id must be a string, a number or null"}})
+        if not isinstance(message.get("method"), str):
+            if "method" not in message and "id" in message and ("result" in message or "error" in message):
+                return      # the answer to a request this server never sent
             return self.send({"id": rid, "error": {"code": -32600, "message": "Invalid request: method must be a string"}})
+        if "id" not in message:
+            return      # a notification
         handler = self.requests.get(message["method"])
         if handler is None:
             return self.send({"id": rid, "error": {"code": -32601, "message": f"Method not found: {message['method']}"}})

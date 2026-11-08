@@ -66,6 +66,32 @@ class ProtocolTest(Fixture):
             self.assertEqual((reply["id"], reply["error"]["code"]), (None, -32600), line)
         self.assertEqual(self.client.send("ping")["result"], {})
 
+    def test_a_request_without_a_method_is_answered_not_ignored(self):
+        for line, rid in (('{"jsonrpc":"2.0","id":5}', 5), ('{"jsonrpc":"2.0","id":"abc","params":{}}', "abc"),
+                          ('{"jsonrpc":"2.0","id":null}', None), ('{"jsonrpc":"2.0","id":0}', 0)):
+            reply = self.client.raw(line)[0]
+            self.assertEqual((reply["id"], reply["error"]["code"]), (rid, -32600), line)
+        self.assertEqual(self.client.send("ping")["result"], {})
+
+    def test_a_message_that_is_neither_a_request_nor_a_notification_nor_a_reply_is_invalid(self):
+        for line in ('{}', '{"jsonrpc":"2.0"}', '{"jsonrpc":"2.0","method":7}', '{"jsonrpc":"2.0","method":["ping"]}'):
+            reply = self.client.raw(line)[0]
+            self.assertEqual((reply["id"], reply["error"]["code"]), (None, -32600), line)
+
+    def test_an_id_that_is_not_a_string_a_number_or_null_is_an_invalid_request_with_a_null_id(self):
+        for rid in ('[1]', '{"a":1}', 'true', 'false'):
+            for body in ('"method":"ping"', '"method":"tools/call","params":{"name":"list_connections"}', ''):
+                reply = self.client.raw('{"jsonrpc":"2.0","id":%s%s}' % (rid, "," + body if body else ""))
+                self.assertEqual([(m["id"], m["error"]["code"]) for m in reply], [(None, -32600)], (rid, body))
+        self.assertEqual(self.client.send("ping")["result"], {})
+
+    def test_a_notification_and_a_reply_to_a_request_never_sent_get_no_answer(self):
+        for line in ('{"jsonrpc":"2.0","method":"notifications/initialized"}', '{"jsonrpc":"2.0","method":"nope"}',
+                     '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"commit_changes"}}',
+                     '{"jsonrpc":"2.0","id":3,"result":{"action":"accept"}}',
+                     '{"jsonrpc":"2.0","id":"x","error":{"code":-1,"message":"no"}}'):
+            self.assertEqual(self.client.raw(line), [], line)
+
     def test_whatever_a_handler_raises_is_an_internal_error_not_the_end_of_the_server(self):
         self.client.server.requests["boom"] = lambda params: 1 / 0
         reply = self.client.raw('{"jsonrpc":"2.0","id":9,"method":"boom"}')[0]
