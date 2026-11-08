@@ -74,7 +74,8 @@ class ProtocolTest(Fixture):
         self.assertEqual(self.client.send("ping")["result"], {})
 
     def test_a_message_that_is_neither_a_request_nor_a_notification_nor_a_reply_is_invalid(self):
-        for line in ('{}', '{"jsonrpc":"2.0"}', '{"jsonrpc":"2.0","method":7}', '{"jsonrpc":"2.0","method":["ping"]}'):
+        for line in ('{}', '{"jsonrpc":"2.0"}', '{"jsonrpc":"2.0","method":7}', '{"jsonrpc":"2.0","method":["ping"]}',
+                     '{"jsonrpc":"2.0","result":{}}', '{"jsonrpc":"2.0","error":{"code":1,"message":"m"}}'):
             reply = self.client.raw(line)[0]
             self.assertEqual((reply["id"], reply["error"]["code"]), (None, -32600), line)
 
