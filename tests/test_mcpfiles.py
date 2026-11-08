@@ -1,7 +1,9 @@
+import fcntl
 import os
 import stat
 import sys
 import tempfile
+import threading
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -29,6 +31,24 @@ class SandboxTest(unittest.TestCase):
         self.assertEqual(path, os.path.join(os.path.realpath(self.root), "export.csv"))
         self.assertEqual(stat.S_IMODE(os.stat(self.root).st_mode), 0o700)
         self.assertFalse(os.path.exists(path))
+
+    def test_a_folder_that_others_can_write_to_is_refused_and_left_as_it_is(self):
+        for mode in (0o770, 0o707, 0o777, 0o722):
+            os.makedirs(self.root, exist_ok=True)
+            os.chmod(self.root, mode)
+            for call in (self.box.new, self.box.existing):
+                with self.assertRaises(Error) as caught:
+                    call("a.csv")
+                self.assertEqual(caught.exception.code, "invalid", oct(mode))
+                self.assertIn("reserve it to your user", caught.exception.message)
+            self.assertEqual(stat.S_IMODE(os.stat(self.root).st_mode), mode, "the folder is not changed")
+
+    def test_a_folder_that_others_can_only_read_is_accepted_as_it_is(self):
+        os.makedirs(self.root)
+        for mode in (0o700, 0o750, 0o755, 0o705):
+            os.chmod(self.root, mode)
+            self.assertTrue(self.box.new("a.csv").endswith("a.csv"), oct(mode))
+            self.assertEqual(stat.S_IMODE(os.stat(self.root).st_mode), mode, "the folder is not changed")
 
     def test_only_a_bare_file_name_is_accepted(self):
         for name in ("../x.csv", "/etc/passwd", "a/b.csv", "..", ".", "", ".hidden.csv", "a\0b", "x\\y", 5, None):
@@ -102,6 +122,78 @@ class SandboxTest(unittest.TestCase):
         with open(os.path.join(self.root, ".backups.json"), "w") as f:
             f.write("{nope")
         self.assertEqual(self.code(self.box.vouched, "a.bak"), "invalid")
+
+    def record(self):
+        return os.path.join(self.root, ".backups.json")
+
+    def test_vouching_does_not_overwrite_a_record_it_could_not_read(self):
+        self.written("a.bak")
+        self.written("b.bak")
+        self.box.vouch("a.bak")
+        for damaged in (b"{nope", b"[1, 2]", b"\xff\xfe", b"\"text\""):
+            with open(self.record(), "wb") as f:
+                f.write(damaged)
+            self.assertEqual(self.code(self.box.vouch, "b.bak"), "invalid", damaged)
+            with open(self.record(), "rb") as f:
+                self.assertEqual(f.read(), damaged, "the record is left as it was")
+            self.assertEqual(self.code(self.box.vouched, "b.bak"), "invalid")
+
+    def test_an_unreadable_record_is_an_error_not_an_empty_one(self):
+        self.written("a.bak")
+        self.box.vouch("a.bak")
+        os.remove(self.record())
+        os.mkdir(self.record())
+        self.assertEqual(self.code(self.box.vouched_for), "invalid")
+        self.assertEqual(self.code(self.box.vouched, "a.bak"), "invalid")
+        self.assertEqual(self.code(self.box.vouch, "a.bak"), "invalid")
+        self.assertTrue(os.path.isdir(self.record()))
+
+    def test_a_missing_record_is_an_empty_one_and_the_first_vouch_creates_it(self):
+        self.written("a.bak")
+        self.assertEqual(self.box.vouched_for(), {})
+        self.assertFalse(os.path.exists(self.record()))
+        self.box.vouch("a.bak")
+        self.assertEqual(list(self.box.vouched_for()), ["a.bak"])
+
+    def test_vouching_waits_for_whoever_holds_the_lock_of_the_record(self):
+        self.written("a.bak")
+        self.written("b.bak")
+        self.box.vouch("a.bak")
+        holder = os.open(os.path.join(self.root, ".backups.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        worker = threading.Thread(target=self.box.vouch, args=("b.bak",))
+        try:
+            worker.start()
+            worker.join(0.3)
+            self.assertTrue(worker.is_alive(), "vouch went on without the lock")
+            self.assertEqual(list(self.box.vouched_for()), ["a.bak"])
+        finally:
+            fcntl.flock(holder, fcntl.LOCK_UN)
+            os.close(holder)
+        worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(sorted(self.box.vouched_for()), ["a.bak", "b.bak"])
+
+    def test_vouching_from_several_threads_loses_no_name(self):
+        names = [f"n{i}.bak" for i in range(12)]
+        for name in names:
+            self.written(name, name.encode())
+        workers = [threading.Thread(target=self.box.vouch, args=(name,)) for name in names]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(10)
+        self.assertEqual(sorted(self.box.vouched_for()), sorted(names))
+
+    def test_the_lock_file_is_out_of_reach_like_the_record(self):
+        self.written("a.bak")
+        self.box.vouch("a.bak")
+        self.assertTrue(os.path.exists(os.path.join(self.root, ".backups.lock")))
+        self.assertEqual(self.box.listing(), [{"name": "a.bak", "bytes": 4}])
+        for name in (".backups.lock", "../files/.backups.lock"):
+            self.assertEqual(self.code(self.box.existing, name), "invalid", name)
+            self.assertEqual(self.code(self.box.new, name), "invalid", name)
+            self.assertEqual(self.code(self.box.vouch, name), "invalid", name)
 
     def test_glance_tells_size_first_lines_and_the_lines_a_client_would_run(self):
         self.written("dump.sql", b"-- dump\n\\connect app\nCOPY t FROM stdin;\n\\N\tx\n\\.\n"
