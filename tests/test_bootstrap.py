@@ -127,6 +127,19 @@ class McpLauncherTest(unittest.TestCase):
         self.assertEqual(err, "")
         self.assertEqual(argv, ["/venv/bin/python", "-m", "omatableplus"])
 
+    def test_the_readme_example_names_the_launcher_with_an_absolute_path(self):
+        # most MCP clients run `command` without a shell, so a `~` would be looked for as a folder name
+        with open(os.path.join(ROOT, "README.md")) as f:
+            readme = f.read()
+        section = readme[readme.index("## MCP server"):]
+        config = json.loads(re.search(r"```json\n(.*?)\n```", section, re.S).group(1))
+        command = config["mcpServers"]["omatableplus"]["command"]
+        self.assertTrue(os.path.isabs(command), command)
+        self.assertEqual(os.path.basename(command), os.path.basename(CTL))
+        self.assertIn("blackcode.omatableplus", command)
+        self.assertEqual(config["mcpServers"]["omatableplus"]["args"], ["mcp"])
+        self.assertRegex(section.split("```")[2], r"(?is)replace.*path")
+
     def test_end_to_end_with_drivers_already_installed(self):
         mod = load_tablectl()
         data = os.path.join(self.tmp, "data")

@@ -203,8 +203,11 @@ dependency.
 
 ```json
 {"mcpServers": {"omatableplus": {
-  "command": "~/.config/omarchy/plugins/blackcode.omatableplus/tablectl", "args": ["mcp"]}}}
+  "command": "/home/you/.config/omarchy/plugins/blackcode.omatableplus/tablectl", "args": ["mcp"]}}}
 ```
+
+Replace `/home/you` so that the path is the real one on your machine, written out in full: most clients start `command`
+without a shell and do not expand `~`.
 
 What the agent may do is decided by **you, when you launch the server**, never by the agent:
 
