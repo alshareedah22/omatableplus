@@ -10,11 +10,14 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import stat
 import tempfile
 
 from .protocol import Error
 
 RECORD = ".backups.json"     # name -> sha256 of every file backup_database wrote; a name tool arguments cannot reach
+COPY_PREFIX = ".restore-"    # the private folder of a verified copy: hidden, so no tool argument can name it
 LOCK = ".backups.lock"       # held while the record is read, changed and replaced; hidden like the record
 HEAD_LINES = 6
 LINE_CUT = 100
@@ -134,6 +137,59 @@ class Sandbox:
                                    "restore_database only loads those unless your client can ask you first. "
                                    "Restore any other file in the OmaTablePlus window")
         return path
+
+    @contextlib.contextmanager
+    def verified_copy(self, name, expected=None):
+        """The path of a private copy of a file, made from the one descriptor that was hashed.
+
+        The file is opened once, without following a link, and read once: the sha256 is computed on the bytes
+        written to the copy, then compared with the record of backup_database, or with `expected` (what the
+        person was shown). So what the caller loads is exactly what was hashed, whatever happens to the path
+        afterwards. The copy lives in a hidden folder of the files folder, which goes away on exit.
+        """
+        root = self.make()
+        path = os.path.join(root, self.name(name))
+        wanted = expected if expected is not None else self.vouched_for().get(os.path.basename(path))
+        if wanted is None:
+            raise Error("invalid", f"{os.path.basename(path)} was not written by backup_database; "
+                                   "restore_database only loads those unless your client can ask you first")
+        source = self.open_regular(path)
+        try:
+            folder = tempfile.mkdtemp(dir=root, prefix=COPY_PREFIX)
+            try:
+                copy = self.copy_checked(source, os.path.join(folder, os.path.basename(path)), wanted)
+                yield copy
+            finally:
+                shutil.rmtree(folder, ignore_errors=True)
+        finally:
+            os.close(source)
+
+    @staticmethod
+    def open_regular(path):
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            raise Error("notfound", f"no file {os.path.basename(path)} in the MCP files folder; "
+                                    "see list_files") from None
+        except OSError as caught:
+            raise Error("invalid", f"{os.path.basename(path)} cannot be opened as a file "
+                                   f"({caught.strerror})") from caught
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise Error("invalid", f"{os.path.basename(path)} is not a regular file")
+        return fd
+
+    @staticmethod
+    def copy_checked(source, target, wanted):
+        sha = hashlib.sha256()
+        with os.fdopen(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as out:
+            for chunk in iter(lambda: os.read(source, 1 << 20), b""):
+                sha.update(chunk)
+                out.write(chunk)
+        if sha.hexdigest() != wanted:
+            raise Error("invalid", f"{os.path.basename(target)} changed since its hash was recorded or shown, "
+                                   "so it is not loaded")
+        return target
 
     def vouched_for(self):
         """The record; a damaged one vouches for nothing."""

@@ -5,10 +5,12 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from omatableplus.mcpfiles import Sandbox, glance
+from omatableplus import mcpfiles
+from omatableplus.mcpfiles import Sandbox, digest, glance
 from omatableplus.protocol import Error
 
 
@@ -212,6 +214,145 @@ class SandboxTest(unittest.TestCase):
         text = glance(self.box.existing("plain.sql"))
         self.assertNotIn("run as commands", text)
         self.assertLess(len(text), 1000)
+
+    def leftovers(self):
+        return [name for name in os.listdir(self.root) if name.startswith(".restore")]
+
+    def refused(self, name, expected=None):
+        with self.assertRaises(Error) as caught:
+            with self.box.verified_copy(name, expected):
+                self.fail("the body must not run")
+        return caught.exception.code
+
+    def read(self, path):
+        with open(path, "rb") as f:
+            return f.read()
+
+    def test_a_verified_copy_is_the_vouched_file_in_a_private_hidden_folder_that_goes_away(self):
+        self.written("app.bak", b"-- dump\nSELECT 1;\n")
+        self.box.vouch("app.bak")
+        with self.box.verified_copy("app.bak") as copy:
+            self.assertEqual(self.read(copy), b"-- dump\nSELECT 1;\n")
+            self.assertEqual(os.path.basename(copy), "app.bak")
+            self.assertNotEqual(copy, os.path.join(os.path.realpath(self.root), "app.bak"))
+            folder = os.path.dirname(copy)
+            self.assertEqual(os.path.dirname(folder), os.path.realpath(self.root))
+            self.assertTrue(os.path.basename(folder).startswith(".restore"))
+            self.assertEqual(stat.S_IMODE(os.stat(copy).st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(os.stat(folder).st_mode), 0o700)
+            self.assertEqual(self.box.listing(), [{"name": "app.bak", "bytes": 18}])
+        self.assertEqual(self.leftovers(), [])
+        self.assertEqual(self.read(os.path.join(self.root, "app.bak")), b"-- dump\nSELECT 1;\n")
+
+    def test_a_file_changed_after_it_was_vouched_is_refused_and_leaves_nothing(self):
+        self.written("app.bak")
+        self.box.vouch("app.bak")
+        with open(os.path.join(self.root, "app.bak"), "ab") as f:
+            f.write(b"; \\! touch /tmp/pwned")
+        with self.assertRaises(Error) as caught:
+            with self.box.verified_copy("app.bak"):
+                self.fail("the body must not run")
+        self.assertEqual(caught.exception.code, "invalid")
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_file_nobody_vouched_for_is_refused_unless_the_hash_the_person_saw_is_given(self):
+        self.written("other.sql", b"SELECT 1;\n")
+        self.assertEqual(self.refused("other.sql"), "invalid")
+        with self.assertRaises(Error) as caught:
+            self.box.verified_copy("other.sql").__enter__()
+        self.assertIn("was not written by backup_database", caught.exception.message)
+        self.assertEqual(self.leftovers(), [], "nothing is created for a file nobody vouched for")
+        seen = digest(self.box.existing("other.sql"))
+        with self.box.verified_copy("other.sql", expected=seen) as copy:
+            self.assertEqual(self.read(copy), b"SELECT 1;\n")
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_hash_that_is_not_the_one_of_the_file_is_refused_even_for_a_vouched_file(self):
+        self.written("app.bak")
+        self.box.vouch("app.bak")
+        self.written("other.sql", b"SELECT 1;\n")
+        wrong = digest(self.box.existing("other.sql"))
+        for expected in (wrong, "0" * 64, ""):
+            with self.assertRaises(Error, msg=expected) as caught:
+                with self.box.verified_copy("app.bak", expected=expected):
+                    self.fail("the body must not run")
+            self.assertEqual(caught.exception.code, "invalid")
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_file_changed_after_the_person_saw_it_is_refused(self):
+        self.written("other.sql", b"SELECT 1;\n")
+        seen = digest(self.box.existing("other.sql"))
+        with open(os.path.join(self.root, "other.sql"), "ab") as f:
+            f.write(b"DROP TABLE t;\n")
+        self.assertEqual(self.refused("other.sql", seen), "invalid")
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_path_swapped_after_the_file_was_opened_does_not_change_what_was_hashed(self):
+        self.written("app.bak", b"what the backup wrote\n")
+        self.box.vouch("app.bak")
+        self.written("evil.bak", b"\\! touch /tmp/pwned\n")
+        real = os.fstat
+
+        def swap_after_open(fd):
+            seen = real(fd)
+            os.replace(os.path.join(self.root, "evil.bak"), os.path.join(self.root, "app.bak"))
+            return seen
+
+        with mock.patch.object(mcpfiles.os, "fstat", swap_after_open):
+            with self.box.verified_copy("app.bak") as copy:
+                self.assertEqual(self.read(copy), b"what the backup wrote\n")
+        self.assertEqual(self.read(os.path.join(self.root, "app.bak")), b"\\! touch /tmp/pwned\n")
+
+    def test_the_copy_does_not_follow_the_file_it_was_made_from(self):
+        self.written("app.bak", b"one")
+        self.box.vouch("app.bak")
+        with self.box.verified_copy("app.bak") as copy:
+            with open(os.path.join(self.root, "app.bak"), "ab") as f:
+                f.write(b" two")
+            self.assertEqual(self.read(copy), b"one")
+
+    def test_a_symbolic_link_a_folder_or_a_pipe_is_not_copied(self):
+        self.written("real.bak")
+        self.box.vouch("real.bak")
+        seen = digest(self.box.existing("real.bak"))
+        os.symlink(os.path.join(self.root, "real.bak"), os.path.join(self.root, "link.bak"))
+        os.symlink(self.tmp.name, os.path.join(self.root, "up"))
+        os.mkdir(os.path.join(self.root, "dir"))
+        os.mkfifo(os.path.join(self.root, "pipe"))
+        for name in ("link.bak", "up", "dir", "pipe"):
+            self.assertEqual(self.refused(name, seen), "invalid", name)
+        self.assertEqual(self.refused("nope.bak", seen), "notfound")
+        self.assertEqual(self.leftovers(), [])
+
+    def test_the_copy_is_removed_even_when_the_body_raises(self):
+        self.written("app.bak")
+        self.box.vouch("app.bak")
+        with self.assertRaises(RuntimeError):
+            with self.box.verified_copy("app.bak") as copy:
+                folder = os.path.dirname(copy)
+                raise RuntimeError("the restore failed")
+        self.assertFalse(os.path.exists(folder))
+        self.assertEqual(self.leftovers(), [])
+        self.assertEqual(self.read(os.path.join(self.root, "app.bak")), b"dump")
+
+    def test_only_what_the_copy_created_is_removed(self):
+        self.written("app.bak")
+        self.box.vouch("app.bak")
+        os.mkdir(os.path.join(self.root, ".restore-keepme"))
+        with self.box.verified_copy("app.bak"):
+            pass
+        self.assertEqual(self.leftovers(), [".restore-keepme"])
+        self.assertTrue(os.path.exists(os.path.join(self.root, "app.bak")))
+
+    def test_a_tool_cannot_name_the_folder_of_a_copy_nor_a_file_in_it(self):
+        self.written("app.bak")
+        self.box.vouch("app.bak")
+        with self.box.verified_copy("app.bak") as copy:
+            folder = os.path.basename(os.path.dirname(copy))
+            for name in (folder, ".restore-xxx", f"{folder}/app.bak", f"../files/{folder}/app.bak"):
+                for call in (self.box.new, self.box.existing):
+                    self.assertEqual(self.code(call, name), "invalid", (call, name))
+                self.assertEqual(self.refused(name), "invalid", name)
 
     def commands_of(self, text):
         return text.split("run as commands", 1)[1] if "run as commands" in text else ""
