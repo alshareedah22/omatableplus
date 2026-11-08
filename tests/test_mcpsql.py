@@ -31,6 +31,10 @@ class RefuseUnlessReadTest(unittest.TestCase):
                             ("postgresql", 'SELECT "pg_read_file"(\'/etc/passwd\')')):
             self.assertEqual(self.code(sql, engine), "files", sql)
 
+    def test_a_query_that_names_a_column_like_a_guard_word_passes(self):
+        refuse_unless_read("SELECT outfile, load_file, set_config FROM t", "mysql")
+        refuse_unless_read("SELECT pg_read_file, set_config FROM t", "postgresql")
+
     def test_a_query_that_reads_and_names_a_column_in_quotes_passes(self):
         refuse_unless_read('SELECT "name" FROM "notes"', "postgresql")
         refuse_unless_read("SELECT `name` FROM `notes`", "mysql")
@@ -91,6 +95,37 @@ class RefuseFileEffectsTest(unittest.TestCase):
                             ("sqlite", "SELECT [load_file]('/etc/passwd')")):
             self.assertEqual(self.code(sql, engine), "files", sql)
 
+    def test_a_file_function_stays_refused_however_its_call_is_written(self):
+        for engine, sql in (("mysql", "SELECT Load_File('/etc/passwd')"),
+                            ("mysql", "SELECT LOAD_FILE /*x*/ ('/etc/passwd')"),
+                            ("mysql", "SELECT LOAD_FILE\n('/etc/passwd')"),
+                            ("mysql", "SELECT LOAD_FILE -- c\n('/etc/passwd')"),
+                            ("mysql", "SELECT `LOAD_FILE` ('/etc/passwd')"),
+                            ("mysql", "SELECT x FROM (SELECT LOAD_FILE('/etc/passwd') AS x) s"),
+                            ("mysql", "WITH c AS (SELECT LOAD_FILE('/etc/passwd') AS x) SELECT x FROM c"),
+                            ("mysql", "SELECT 1; SELECT load_file('/etc/passwd')"),
+                            ("postgresql", "SELECT pg_catalog.pg_read_file ('/etc/passwd')"),
+                            ("postgresql", 'SELECT "pg_catalog"."pg_read_file"(\'/etc/passwd\')'),
+                            ("postgresql", "SELECT PG_Read_File\t('/etc/passwd')"),
+                            ("postgresql", "SELECT * FROM (SELECT pg_ls_dir('/etc')) s"),
+                            ("postgresql", "WITH c AS (SELECT lo_import('/etc/passwd')) SELECT * FROM c"),
+                            ("sqlite", "SELECT 1; SELECT load_file /*x*/ ('/etc/passwd')")):
+            self.assertEqual(self.code(sql, engine), "files", (engine, sql))
+
+    def test_into_outfile_and_into_dumpfile_stay_refused_however_they_are_spaced(self):
+        for sql in ("SELECT * FROM t INTO\nOUTFILE '/tmp/x'", "SELECT 1 INTO /*c*/ DUMPFILE '/tmp/x'",
+                    "SELECT 1 INTO -- c\n OUTFILE '/tmp/x'", "select 1 into outfile '/tmp/x'",
+                    "SELECT 1; SELECT 2 INTO OUTFILE '/tmp/x'", "SELECT * FROM (SELECT 1) s INTO\tDumpFile '/tmp/x'"):
+            self.assertEqual(self.code(sql, "mysql"), "files", sql)
+
+    def test_a_guard_word_that_is_not_called_nor_follows_into_is_a_name_and_passes(self):
+        for sql in ("SELECT outfile FROM t", "SELECT dumpfile, outfile FROM t WHERE outfile > 1",
+                    'SELECT "outfile" FROM t', "SELECT `dumpfile` FROM `outfile`", "SELECT load_file FROM t",
+                    "SELECT 1 AS load_file_count", "SELECT pg_read_file, lo_import AS lo_export FROM t",
+                    "SELECT 1 AS pg_ls_dir"):
+            for engine in ("mysql", "mariadb", "postgresql", "sqlite"):
+                refuse_file_effects(sql, engine)
+
     def test_the_names_of_file_functions_as_text_or_as_part_of_another_name_pass(self):
         for sql in ("SELECT 'LOAD_FILE pg_read_file lo_import' AS words", "SELECT 1 AS load_file_count",
                     "SELECT 1 /* pg_ls_dir */", 'SELECT "name" FROM "files"'):
@@ -121,6 +156,25 @@ class RefuseSessionEscapesTest(unittest.TestCase):
             with self.assertRaises(Error, msg=sql) as caught:
                 refuse_session_escapes(sql, "postgresql")
             self.assertEqual(caught.exception.code, "invalid", sql)
+
+    def test_the_calls_stay_refused_however_they_are_written(self):
+        for sql in ("SELECT SeT_CoNfIg('a', 'b', false)", "SELECT set_config /*x*/ ('a', 'b', false)",
+                    "SELECT set_config\n('a', 'b', false)", "SELECT set_config -- c\n('a', 'b', false)",
+                    "SELECT pg_catalog.set_config ('a', 'b', false)", 'SELECT pg_catalog."set_config"(\'a\', \'b\', false)',
+                    "SELECT 1; SELECT set_config('a', 'b', false)",
+                    "SELECT * FROM (SELECT set_config('a', 'b', false)) s",
+                    "WITH c AS (SELECT set_config('a', 'b', false)) SELECT * FROM c",
+                    "SELECT dblink /*x*/ ('dbname=x', 'SELECT 1')", "SELECT DBLINK_EXEC\n('dbname=x', 'DELETE FROM t')",
+                    "SELECT * FROM ts_stat ('SELECT 1::tsvector')", "SELECT Query_To_Xml\t('SELECT 1', true, true, '')"):
+            with self.assertRaises(Error, msg=sql) as caught:
+                refuse_session_escapes(sql, "postgresql")
+            self.assertEqual(caught.exception.code, "invalid", sql)
+
+    def test_a_guard_word_that_is_not_called_is_a_name_and_passes(self):
+        for sql in ("SELECT set_config FROM t", 'SELECT "set_config", "ts_stat" FROM "dblink"',
+                    "SELECT query_to_xml, cursor_to_xml FROM t WHERE ts_stat > 1", "SELECT dblink_exec FROM t",
+                    "SELECT a AS dblink_conn, b AS set_config FROM t"):
+            refuse_session_escapes(sql, "postgresql")
 
     def test_a_quoted_name_that_is_not_one_of_them_passes(self):
         for sql in ('SELECT "name", "set_config_note" FROM "notes"', "SELECT 'set_config' AS word",
@@ -168,6 +222,16 @@ class RefuseDestructiveTest(unittest.TestCase):
         for sql in ('PRAGMA "writable_schema"=1', "PRAGMA [writable_schema] = 1", 'PRAGMA main."writable_schema"(1)'):
             self.assertEqual(self.code(sql), "destructive", sql)
         self.assertEqual(self.code("PRAGMA `writable_schema` = 1", "mysql"), "destructive")
+
+    def test_writable_schema_stays_refused_wherever_the_pragma_is(self):
+        for sql in ("EXPLAIN PRAGMA writable_schema=1", "pragma Writable_Schema=1", "SELECT 1; PRAGMA writable_schema=1",
+                    'PRAGMA main."writable_schema"=1', "/* c */ PRAGMA\nwritable_schema = ON"):
+            self.assertEqual(self.code(sql), "destructive", sql)
+
+    def test_writable_schema_that_is_not_the_pragma_is_a_name_and_passes(self):
+        for sql in ("SELECT writable_schema FROM t", 'SELECT "writable_schema" FROM t',
+                    "UPDATE t SET writable_schema = 1", "PRAGMA table_info(t)", "SELECT 1 AS writable_schema"):
+            refuse_destructive(sql, "sqlite")
 
     def test_quoted_names_and_text_that_are_not_drops_pass(self):
         for sql in ('SELECT "name" FROM "notes"', 'INSERT INTO "notes" ("body") VALUES (\'writable_schema\')',
