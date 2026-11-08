@@ -10,7 +10,7 @@ from mcpkit import Client, Fixture
 
 from omatableplus import omadb, safety
 from omatableplus.mcp import LATEST, SUPPORTED, McpServer
-from omatableplus.mcpschema import CELL_LIMIT, DEFAULT_ROWS, HISTORY_LIMIT, MATCH_LIMIT, MAX_ROWS, shrink, shrink_rows
+from omatableplus.mcpschema import CELL_LIMIT, DEFAULT_ROWS, HISTORY_LIMIT, MATCH_LIMIT, MAX_ROWS, check, schema_of, shrink, shrink_rows
 from omatableplus.protocol import Error
 
 
@@ -136,7 +136,45 @@ class ShrinkTest(unittest.TestCase):
         self.assertIsInstance(rows[0][1], str)
 
 
+class CheckTest(unittest.TestCase):
+    """What a model sends inside an array or an object is held to the schema the tool published."""
+
+    SCHEMA = schema_of({
+        "rows": {"type": "array", "items": {"type": "object", "properties": {
+            "name": {"type": "string"}, "size": {"type": "integer"}, "tags": {"type": "array", "items": {"type": "string"}},
+            "kind": {"type": "string", "enum": ["a", "b"]}, "any": {}}, "required": ["name"]}},
+        "options": {"type": "object", "properties": {"deep": {"type": "object", "properties": {"on": {"type": "boolean"}},
+                                                               "required": ["on"]}}},
+    }, ())
+
+    def refused(self, arguments):
+        with self.assertRaises(Error) as caught:
+            check(arguments, self.SCHEMA)
+        self.assertEqual(caught.exception.code, "invalid")
+        return caught.exception.message
+
+    def test_what_the_schema_allows_goes_through(self):
+        check({"rows": [{"name": "x"}, {"name": "y", "size": 3, "tags": ["t", "u"], "kind": "b", "any": [1, {"z": None}],
+                                        "extra": "undeclared keys of an item are not refused"}, {"name": "z", "tags": []}],
+               "options": {"deep": {"on": False}, "other": 1}}, self.SCHEMA)
+        check({"rows": [], "options": {}}, self.SCHEMA)
+
+    def test_an_item_that_is_not_what_the_schema_says_is_refused_and_named(self):
+        for rows, where in (([{"name": "x"}, "text"], "rows[1]"), ([1], "rows[0]"), ([[{"name": "x"}]], "rows[0]"),
+                            ([{"size": 1}], "rows[0]"), ([{"name": 5}], "rows[0].name"),
+                            ([{"name": "x", "size": True}], "rows[0].size"), ([{"name": "x", "size": "3"}], "rows[0].size"),
+                            ([{"name": "x", "tags": "t"}], "rows[0].tags"), ([{"name": "x", "tags": ["t", 2]}], "rows[0].tags[1]"),
+                            ([{"name": "x", "kind": "c"}], "rows[0].kind")):
+            self.assertIn(where, self.refused({"rows": rows}), rows)
+
+    def test_an_object_inside_an_object_is_checked_too(self):
+        for options, where in (({"deep": []}, "options.deep"), ({"deep": {}}, "options.deep"),
+                               ({"deep": {"on": "yes"}}, "options.deep.on")):
+            self.assertIn(where, self.refused({"options": options}), options)
+
+
 class ReadTest(Fixture):
+
     def test_tools_listed_in_read_mode_have_no_commit(self):
         names = self.client.tool_names()
         self.assertIn("execute_sql", names)
@@ -234,6 +272,21 @@ class ReadTest(Fixture):
         self.assertEqual(len(page["rows"]), MAX_ROWS)
         _, page = self.client.call("search_rows", limit=MAX_ROWS, offset=250, **args)
         self.assertEqual((len(page["rows"]), page["truncated"]), (50, False))
+
+    def test_a_malformed_item_inside_an_argument_is_an_input_error_not_an_internal_one(self):
+        base = {"connection": "Notes", "schema": "main", "table": "notes"}
+        for name, value in (("filters", [{"op": "null"}]), ("filters", [{"column": "id"}]), ("filters", [{"column": 3, "op": "null"}]),
+                            ("filters", [{"column": "id", "op": ["null"]}]), ("filters", ["id"]), ("filters", [["id", "null"]]),
+                            ("sort", [{"desc": True}]), ("sort", [{"column": "id", "desc": "yes"}]), ("sort", ["id"])):
+            is_error, payload = self.client.call("search_rows", **base, **{name: value})
+            self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"), (name, value))
+        writer = Client(self.helper, write=True)
+        for tool in ("preview_changes", "commit_changes"):
+            for name, value in (("inserts", ["text"]), ("inserts", [[1]]), ("updates", [3]), ("updates", [None]),
+                                ("deletes", ["id"]), ("deletes", [{"key": {"id": 1}}, 7])):
+                is_error, payload = writer.call(tool, **base, **{name: value})
+                self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"), (tool, name, value))
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 3)
 
     def test_search_rows_keeps_at_least_one_row_and_never_starts_before_the_first(self):
         args = {"connection": "Notes", "schema": "main", "table": "notes"}

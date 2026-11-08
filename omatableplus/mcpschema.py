@@ -49,7 +49,10 @@ def schema_of(properties, required):
 
 
 def check(arguments, schema):
-    """Reject what the schema does not declare: an unknown `confirmed` must never reach the helper."""
+    """Reject what the schema does not declare: an unknown `confirmed` must never reach the helper.
+
+    What is inside an array or an object is held to the schema too (type, enum, required, items), so that a
+    malformed filter or change is an input error the model can read, not an internal one."""
     if not isinstance(arguments, dict):
         raise Error("invalid", "arguments must be an object")
     properties = schema["properties"]
@@ -60,9 +63,25 @@ def check(arguments, schema):
         if name not in arguments:
             raise Error("invalid", f"missing argument {name!r}")
     for name, value in arguments.items():
-        kind = properties[name]["type"]
-        if not isinstance(value, TYPES[kind]) or (kind == "integer" and isinstance(value, bool)):
-            raise Error("invalid", f"{name!r} must be {'an' if kind in ('integer', 'array', 'object') else 'a'} {kind}")
+        check_value(value, properties[name], name)
+
+
+def check_value(value, schema, where):
+    kind = schema.get("type")
+    if kind and (not isinstance(value, TYPES[kind]) or (kind == "integer" and isinstance(value, bool))):
+        raise Error("invalid", f"{where!r} must be {'an' if kind in ('integer', 'array', 'object') else 'a'} {kind}")
+    if "enum" in schema and value not in schema["enum"]:
+        raise Error("invalid", f"{where!r} must be one of {', '.join(map(str, schema['enum']))}")
+    if isinstance(value, dict):
+        for name in schema.get("required", ()):
+            if name not in value:
+                raise Error("invalid", f"{where!r} is missing {name!r}")
+        for name, item in value.items():
+            if name in schema.get("properties", {}):
+                check_value(item, schema["properties"][name], f"{where}.{name}")
+    elif isinstance(value, list) and "items" in schema:
+        for index, item in enumerate(value):
+            check_value(item, schema["items"], f"{where}[{index}]")
 
 
 def shrink(value):
