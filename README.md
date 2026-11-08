@@ -220,7 +220,7 @@ What the agent may do is decided by **you, when you launch the server**, never b
 | Tool | Tier | What it does |
 |---|---|---|
 | `list_connections`, `list_databases`, `list_objects`, `describe_object`, `search_schema` | read | what exists, with columns, keys, indexes and the CREATE statement |
-| `search_rows`, `execute_sql`, `explain_sql`, `recent_queries` | read | read rows (filters, order, paging, total), run SQL, see the plan and the history |
+| `search_rows`, `execute_sql`, `explain_sql`, `recent_queries` | read | read rows (filters, order, paging, total), run SQL, see the plan and the history of a connection |
 | `preview_changes` | read | the exact SQL a change would run, without running it |
 | `commit_changes` | write | inserts, updates and deletes by primary key, in one transaction |
 
@@ -248,6 +248,7 @@ What keeps an agent from doing more than you would at the window:
   as `‹binary N bytes›`.
 - Pass `database` when a connection has no default database (`list_databases` shows an empty `database`).
 - Requests are served one at a time, and queries from the agent land in the query history like any other.
+  `recent_queries` needs a connection and only returns the history of that one.
 - Redis and MongoDB connections are listed with `supported: false`: the tools of this server do not work with them.
 
 ## Install

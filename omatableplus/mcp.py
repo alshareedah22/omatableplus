@@ -80,9 +80,11 @@ SQL_TOOLS = (
      {"connection": CONNECTION, "database": DATABASE, "sql": SQL,
       "analyze": {"type": "boolean", "description": "Run the statement to get real timings."}},
      ("connection", "sql"), READ),
-    ("recent_queries", "Recent queries run from OmaTablePlus (the window and this server), newest first.",
+    ("recent_queries", "Recent queries run from OmaTablePlus on one connection (the window and this server), newest "
+     "first.",
      {"connection": CONNECTION, "search": {"type": "string", "description": "Only SQL containing this text."},
-      "limit": {"type": "integer", "description": f"At most {HISTORY_LIMIT} (default 20)."}}, (), READ),
+      "limit": {"type": "integer", "description": f"At most {HISTORY_LIMIT} (default 20)."}},
+     ("connection",), READ),
     ("preview_changes", "Show the exact SQL that inserts, updates and deletes would run, without running it. "
      "Needs a primary key (SQLite: rowid).",
      {"connection": CONNECTION, "database": DATABASE, "schema": SCHEMA, "table": TABLE, **CHANGES},
@@ -335,9 +337,9 @@ class McpServer:
         out = self.methods["query.explain"](session=self.session(connection, database), text=sql, analyze=analyze)
         return {k: v for k, v in out.items() if k != "range"}
 
-    def tool_recent_queries(self, connection=None, search="", limit=20):
-        conn_id = self.connection(connection)["id"] if connection else None
-        items = self.methods["query.history"](conn=conn_id, search=search, limit=max(1, min(limit, HISTORY_LIMIT)))
+    def tool_recent_queries(self, connection, search="", limit=20):
+        items = self.methods["query.history"](conn=self.connection(connection)["id"], search=search,
+                                              limit=max(1, min(limit, HISTORY_LIMIT)))
         return {"items": [{**{k: v for k, v in item.items() if k != "conn"}, "sql": shrink(str(item.get("sql", "")))}
                           for item in items["items"]]}
 

@@ -408,7 +408,19 @@ class ReadTest(Fixture):
         self.assertEqual([len(recent(connection="Notes", limit=n)) for n in (0, -2, 3)], [1, 1, 3])
         self.assertTrue(all(len(item["sql"]) < CELL_LIMIT + 50 for item in recent(connection="Notes")))
         self.assertNotIn("SELECT 'on prod'", [item["sql"] for item in recent(connection="Notes", limit=HISTORY_LIMIT)])
-        self.assertIn("SELECT 'on prod'", [item["sql"] for item in recent(search="on prod")])
+        self.assertIn("SELECT 'on prod'", [item["sql"] for item in recent(connection="Prod", search="on prod")])
+        self.assertEqual(recent(connection="Notes", search="on prod"), [])
+
+    def test_recent_queries_needs_a_connection_and_never_shows_the_history_of_the_others(self):
+        self.client.call("execute_sql", connection="Prod", sql="SELECT 'run elsewhere'")
+        schema = {t["name"]: t["inputSchema"] for t in self.client.send("tools/list")["result"]["tools"]}["recent_queries"]
+        self.assertEqual(schema["required"], ["connection"])
+        for arguments in ({}, {"search": "elsewhere"}, {"limit": 5}):
+            is_error, payload = self.client.call("recent_queries", **arguments)
+            self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"), arguments)
+            self.assertIn("connection", payload["error"]["message"])
+        is_error, payload = self.client.call("recent_queries", connection="Notes", search="elsewhere")
+        self.assertEqual((is_error, payload["items"]), (False, []))
 
     def test_a_session_in_read_mode_is_kept_between_calls(self):
         self.client.call("execute_sql", connection="Notes", sql="SELECT 1")
