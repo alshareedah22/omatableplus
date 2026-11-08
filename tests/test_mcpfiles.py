@@ -213,6 +213,58 @@ class SandboxTest(unittest.TestCase):
         self.assertNotIn("run as commands", text)
         self.assertLess(len(text), 1000)
 
+    def commands_of(self, text):
+        return text.split("run as commands", 1)[1] if "run as commands" in text else ""
+
+    def test_glance_says_when_more_commands_than_it_shows_are_there(self):
+        self.written("many.sql", b"".join(b"\\! cmd%d\n" % i for i in range(1, 9)) + b"SELECT 1;\n")
+        text = glance(self.box.existing("many.sql"))
+        for shown in range(1, 6):
+            self.assertIn(f"\\! cmd{shown}\n", text + "\n")
+        for hidden in range(6, 9):
+            self.assertNotIn(f"cmd{hidden}", self.commands_of(text))
+        self.assertIn("(3 more not shown)", self.commands_of(text))
+
+    def test_glance_of_exactly_the_limit_of_commands_has_no_more_not_shown(self):
+        self.written("five.sql", b"".join(b"\\! cmd%d\n" % i for i in range(1, 6)))
+        text = glance(self.box.existing("five.sql"))
+        self.assertIn("cmd5", self.commands_of(text))
+        self.assertNotIn("more not shown", text)
+
+    def test_glance_marks_the_lines_it_cut_and_only_those(self):
+        self.written("cut.sql", b"x" * 150 + b"\n" + b"y" * 100 + b"\n" + b"\\! " + b"z" * 150 + b"\n"
+                                + b"\\! " + b"w" * 97 + b"\n")
+        text = glance(self.box.existing("cut.sql"))
+        self.assertIn("  " + "x" * 100 + "...\n", text + "\n")
+        self.assertIn("  " + "y" * 100 + "\n", text + "\n")
+        self.assertNotIn("y" * 100 + "...", text)
+        self.assertIn("  \\! " + "z" * 97 + "...", self.commands_of(text))
+        self.assertIn("\\! " + "w" * 97 + "\n", self.commands_of(text) + "\n")
+        self.assertNotIn("w" * 97 + "...", text)
+
+    def test_glance_reads_a_physical_line_of_more_than_4096_bytes_as_one_line(self):
+        # the part after the 4096th byte is not the start of a line: it must not count as one nor be run-checked
+        self.written("long.sql", b"SELECT 1;\n" + b"x" * 4096 + b"\\! id\n" + b"SELECT 2;\n")
+        text = glance(self.box.existing("long.sql"))
+        self.assertIn("3 lines", text)
+        self.assertNotIn("run as commands", text)
+        self.assertIn("  " + "x" * 100 + "...", text)
+
+    def test_glance_marks_and_counts_a_command_line_that_is_longer_than_4096_bytes(self):
+        self.written("huge.sql", b"\\! " + b"y" * 5000 + b"\nSELECT 1;\n\\! id\n")
+        text = glance(self.box.existing("huge.sql"))
+        self.assertIn("3 lines", text)
+        self.assertIn("  \\! " + "y" * 97 + "...", self.commands_of(text))
+        self.assertIn("  \\! id", self.commands_of(text))
+
+    def test_glance_counts_a_line_at_the_edge_of_the_4096_bytes_once(self):
+        for width in (4095, 4096, 4097):
+            for end in (b"\n", b"\r\n"):
+                self.written(f"edge{width}{len(end)}.sql", b"-- " + b"a" * (width - 3) + end + b"\\! id\n")
+                text = glance(self.box.existing(f"edge{width}{len(end)}.sql"))
+                self.assertIn("2 lines", text, (width, end))
+                self.assertIn("  \\! id", self.commands_of(text), (width, end))
+
     def test_listing_shows_visible_regular_files_with_their_size(self):
         self.assertEqual(self.box.listing(), [])
         self.box.new("seed.csv")

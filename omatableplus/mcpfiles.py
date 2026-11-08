@@ -18,6 +18,7 @@ RECORD = ".backups.json"     # name -> sha256 of every file backup_database wrot
 LOCK = ".backups.lock"       # held while the record is read, changed and replaced; hidden like the record
 HEAD_LINES = 6
 LINE_CUT = 100
+LINE_READ = 4096             # a longer physical line is read to its end, but only this much of it is kept
 COMMAND_LINES = 5
 # What the psql and mysql clients run as a shell command or a script when they meet it at the start of a line.
 # `\connect`, `\restrict`, `\N` (a NULL in COPY data) and a lone `\.` (end of COPY data) are in every pg_dump.
@@ -32,21 +33,41 @@ def digest(path):
     return sha.hexdigest()
 
 
+def physical_lines(path):
+    """The first LINE_READ bytes of each physical line.
+
+    A longer line is read to its end in chunks and counted once, so what follows the first chunk is never taken
+    for the start of a line. What is kept of it is always longer than LINE_CUT, so `shown` marks it as cut.
+    """
+    with open(path, "rb") as f:
+        for raw in iter(lambda: f.readline(LINE_READ), b""):
+            last = raw
+            while not last.endswith(b"\n") and last:
+                last = f.readline(LINE_READ)
+            yield raw.decode("utf-8", "replace").rstrip("\r\n")
+
+
+def shown(line):
+    return line[:LINE_CUT] + "..." if len(line) > LINE_CUT else line
+
+
 def glance(path):
     """What a person needs to decide on a file: its size, its first lines, and the lines a client would run."""
-    head, commands, lines = [], [], 0
-    with open(path, "rb") as f:
-        for raw in iter(lambda: f.readline(4096), b""):
-            line = raw.decode("utf-8", "replace").rstrip("\r\n")
-            lines += 1
-            if lines <= HEAD_LINES:
-                head.append(line[:LINE_CUT])
-            if RUNS_COMMANDS.match(line) and len(commands) < COMMAND_LINES:
-                commands.append(line[:LINE_CUT])
+    head, commands, lines, more = [], [], 0, 0
+    for line in physical_lines(path):
+        lines += 1
+        if lines <= HEAD_LINES:
+            head.append(shown(line))
+        if RUNS_COMMANDS.match(line) and len(commands) < COMMAND_LINES:
+            commands.append(shown(line))
+        elif RUNS_COMMANDS.match(line):
+            more += 1
     text = [f"{os.path.basename(path)}: {os.path.getsize(path)} bytes, {lines} lines", "First lines:"]
     text += [f"  {line}" for line in head]
     if commands:
         text += ["Lines the psql and mysql clients run as commands:"] + [f"  {line}" for line in commands]
+    if more:
+        text.append(f"  ({more} more not shown)")
     return "\n".join(text)
 
 
