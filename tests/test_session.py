@@ -85,6 +85,15 @@ class SessionTest(unittest.TestCase):
             self.m["schema.tree"](session=sid)
         self.assertEqual(e.exception.code, "notfound")
 
+    def test_a_page_comes_with_its_total_and_leaves_no_transaction_open(self):
+        sid = self.m["session.open"](id=self.conn["id"])["session"]
+        page = self.m["table.page"](session=sid, schema="main", table="notes", limit=2,
+                                    filters=[{"column": "body", "op": "contains", "value": "t"}])
+        self.assertEqual((len(page["rows"]), page["matched"]), (2, 2))
+        changes = {"updates": [{"key": {"id": 1}, "values": {"body": "uno"}}]}
+        self.assertEqual(self.m["table.commit"](session=sid, schema="main", table="notes", changes=changes),
+                         {"affected": 1})
+
     def test_query_run_current_and_all(self):
         sid = self.m["session.open"](id=self.conn["id"])["session"]
         text = "SELECT body FROM notes WHERE id = 1;\n\nSELECT count(*) FROM notes;\n"
