@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from mcpkit import Client, Fixture
 
 from omatableplus import omadb, safety
+from omatableplus.adapters.base import SQLAdapter
 from omatableplus.mcp import LATEST, SUPPORTED, McpServer
 from omatableplus.mcpschema import CELL_LIMIT, DEFAULT_ROWS, HISTORY_LIMIT, MATCH_LIMIT, MAX_ROWS, check, schema_of, shrink, shrink_rows
 from omatableplus.protocol import Error
@@ -264,6 +265,22 @@ class ReadTest(Fixture):
         self.assertEqual(payload["columns"], ["id", "body"])
         self.assertEqual(payload["rows"], [[3, "three"], [2, "two"]])
         self.assertEqual((payload["matched"], payload["truncated"]), (2, False))
+
+    def test_search_rows_page_and_total_come_from_the_same_snapshot(self):
+        sqlite3.connect(self.path).execute("PRAGMA journal_mode=WAL").close()
+        count = SQLAdapter.count
+
+        def count_after_a_write(adapter, *args, **kwargs):
+            writer = sqlite3.connect(self.path)
+            writer.execute("INSERT INTO notes (body) VALUES ('four')")
+            writer.commit()
+            writer.close()
+            return count(adapter, *args, **kwargs)
+
+        with mock.patch.object(SQLAdapter, "count", count_after_a_write):
+            _, page = self.client.call("search_rows", connection="Notes", schema="main", table="notes", limit=2)
+        self.assertEqual((len(page["rows"]), page["matched"], page["truncated"]), (2, 3, True))
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM notes"), 4)
 
     def test_search_rows_default_and_maximum_page(self):
         args = {"connection": "Notes", "schema": "main", "table": "big"}

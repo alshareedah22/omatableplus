@@ -304,10 +304,10 @@ class McpServer:
         sid = self.session(connection, database)
         offset = max(0, offset)
         where = {"session": sid, "schema": schema, "table": table, "filters": filters or [], "match": match}
-        page = self.methods["table.rows"](**where, sort=sort or [], offset=offset, limit=page_size(limit))
-        matched = self.methods["table.count"](**where)["count"]
+        page = self.methods["table.page"](**where, sort=sort or [], offset=offset, limit=page_size(limit))
         return {"columns": [c["name"] for c in page["columns"]], "rows": shrink_rows(page["rows"]),
-                "key": page["key"], "matched": matched, "truncated": matched > offset + len(page["rows"])}
+                "key": page["key"], "matched": page["matched"],
+                "truncated": page["matched"] > offset + len(page["rows"])}
 
     def tool_execute_sql(self, connection, sql, database=None, max_rows=DEFAULT_ROWS):
         engine = self.connection(connection)["engine"]
