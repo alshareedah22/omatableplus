@@ -78,6 +78,92 @@ class MigrateTest(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.data, "omatable", "venv", "something-else")))
 
 
+def load_tablectl():
+    import importlib.machinery
+    import importlib.util
+    loader = importlib.machinery.SourceFileLoader("tablectl_under_test", CTL)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+class McpLauncherTest(unittest.TestCase):
+    """`tablectl mcp` runs the MCP server from the drivers' venv; stdout then belongs to the MCP client."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def launch(self, argv):
+        import contextlib
+        import io
+        import warnings
+        from unittest import mock
+        mod = load_tablectl()
+        out, err = io.StringIO(), io.StringIO()
+
+        def fake_venv():
+            mod.emit({"event": "progress", "text": "Preparing database drivers…"})
+            return "/venv/bin/python"
+
+        with mock.patch.object(mod, "migrate"), mock.patch.object(mod, "ensure_venv", fake_venv), \
+                mock.patch.object(mod.os, "execve") as execve, mock.patch.object(mod.sys, "argv", ["tablectl", *argv]), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), warnings.catch_warnings():
+            # a connection another test left open can be collected here, and its warning would land in err
+            warnings.simplefilter("ignore", ResourceWarning)
+            mod.main()
+        return out.getvalue(), err.getvalue(), execve.call_args.args[:2]
+
+    def test_mcp_mode_keeps_stdout_for_the_client_and_forwards_flags(self):
+        out, err, (path, argv) = self.launch(["mcp", "--write"])
+        self.assertEqual(out, "")
+        self.assertIn('"progress"', err)
+        self.assertEqual((path, argv), ("/venv/bin/python", ["/venv/bin/python", "-m", "omatableplus.mcp", "--write"]))
+
+    def test_the_window_still_gets_its_events_on_stdout(self):
+        out, err, (path, argv) = self.launch([])
+        self.assertIn('"progress"', out)
+        self.assertEqual(err, "")
+        self.assertEqual(argv, ["/venv/bin/python", "-m", "omatableplus"])
+
+    def test_the_readme_example_names_the_launcher_with_an_absolute_path(self):
+        # most MCP clients run `command` without a shell, so a `~` would be looked for as a folder name
+        with open(os.path.join(ROOT, "README.md")) as f:
+            readme = f.read()
+        section = readme[readme.index("## MCP server"):]
+        config = json.loads(re.search(r"```json\n(.*?)\n```", section, re.S).group(1))
+        command = config["mcpServers"]["omatableplus"]["command"]
+        self.assertTrue(os.path.isabs(command), command)
+        self.assertEqual(os.path.basename(command), os.path.basename(CTL))
+        self.assertIn("blackcode.omatableplus", command)
+        self.assertEqual(config["mcpServers"]["omatableplus"]["args"], ["mcp"])
+        self.assertRegex(section.split("```")[2], r"(?is)replace.*path")
+
+    def test_end_to_end_with_drivers_already_installed(self):
+        mod = load_tablectl()
+        data = os.path.join(self.tmp, "data")
+        os.makedirs(os.path.join(data, "venv", "bin"))
+        os.symlink("/usr/bin/python3", os.path.join(data, "venv", "bin", "python"))
+        with open(os.path.join(data, "venv", ".omatableplus-stamp"), "w") as f:
+            f.write(mod.stamp() + "\n")
+        env = {**os.environ, "OMATABLEPLUS_DATA": data, "OMATABLEPLUS_CONFIG": os.path.join(self.tmp, "cfg"),
+               "OMATABLEPLUS_NO_KEYRING": "1", "OMATABLEPLUS_DBCTL": os.path.join(self.tmp, "none")}
+        asks = "".join(json.dumps(m) + "\n" for m in (
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}))
+        names = {}
+        for flags in ([], ["--write"]):
+            r = subprocess.run([CTL, "mcp", *flags], input=asks, capture_output=True, text=True, env=env, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            replies = [json.loads(line) for line in r.stdout.splitlines()]
+            self.assertEqual([x["id"] for x in replies], [1, 2], r.stdout)
+            names[bool(flags)] = {t["name"] for t in replies[1]["result"]["tools"]}
+        self.assertNotIn("commit_changes", names[False])
+        self.assertIn("commit_changes", names[True])
+
+
 @unittest.skipUnless(NET, "set OMATABLEPLUS_TEST_NET=1 to download drivers")
 class BootstrapTest(unittest.TestCase):
     def setUp(self):
