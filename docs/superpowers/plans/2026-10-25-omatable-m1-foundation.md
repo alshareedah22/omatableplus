@@ -2170,7 +2170,7 @@ __pycache__/
 A TablePlus-style database GUI for [Omarchy](https://omarchy.org). Status: early (M1): connections management.
 
 - PostgreSQL, MySQL, MariaDB, SQLite, Redis, Valkey and MongoDB
-- Servers from [OmaDB](https://github.com/alshareedah22/omadb) are listed automatically, with their credentials
+- Servers from [OmaDB](https://github.com/blackcodesh/omadb) are listed automatically, with their credentials
 - Passwords are kept in your keyring (Secret Service), never in plain files when a keyring is available
 - SSH tunnels with agent, key or password login
 
@@ -2178,7 +2178,7 @@ A TablePlus-style database GUI for [Omarchy](https://omarchy.org). Status: early
 
 Install from the Omarchy plugin manager, or:
 
-    git clone https://github.com/alshareedah22/omatable ~/.config/omarchy/plugins/blackcode.omatable
+    git clone https://github.com/blackcodesh/omatable ~/.config/omarchy/plugins/blackcode.omatable
     omarchy restart shell
 
 Then add the **OmaTable** bar widget, or open the window with:
@@ -2216,4 +2216,4 @@ git add README.md LICENSE .gitignore
 git commit -m "Add README and license"
 ```
 
-Pushing to GitHub (`gh repo create alshareedah22/omatable --public --source . --push`) happens only after the user confirms; ask at the end of M1.
+Pushing to GitHub (`gh repo create blackcodesh/omatable --public --source . --push`) happens only after the user confirms; ask at the end of M1.
