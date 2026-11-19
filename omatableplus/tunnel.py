@@ -6,6 +6,7 @@ in argv or the environment, and the FIFO is written exactly once.
 """
 
 import ctypes
+import ipaddress
 import os
 import re
 import shutil
@@ -20,6 +21,31 @@ from .protocol import Error
 
 _HOST_RE = re.compile(r"^[A-Za-z0-9._:%\-\[\]]+$")
 _USER_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._@+\-]*$")
+
+
+_FWD_HOST_RE = re.compile(r"^[A-Za-z0-9._\-]+$")
+
+
+def _is_ipv6(text):
+    try:
+        ipaddress.IPv6Address(text)
+        return True
+    except ValueError:
+        return False
+
+
+def forward_host(host):
+    """The host for the -L spec, checked: ':' would otherwise change the spec. A real IPv6
+    address goes in brackets, as ssh wants it."""
+    host = str(host or "127.0.0.1")
+    if host.startswith("[") and host.endswith("]") and _is_ipv6(host[1:-1]):
+        return host
+    if _is_ipv6(host):
+        return "[" + host + "]"
+    if host.startswith("-") or not _FWD_HOST_RE.match(host):
+        raise Error("tunnel", "invalid database host for the tunnel: use a host name or IP address "
+                              "without spaces, ':' (except in an IPv6 address) or control characters")
+    return host
 
 
 def check_target(ssh):
@@ -74,7 +100,7 @@ class Tunnel:
     def command(self, local_port):
         ssh = self.ssh
         check_target(ssh)
-        argv = ["ssh", "-N", "-L", f"127.0.0.1:{local_port}:{self.target_host}:{self.target_port}",
+        argv = ["ssh", "-N", "-L", f"127.0.0.1:{local_port}:{forward_host(self.target_host)}:{self.target_port}",
                 "-p", str(ssh.get("port") or 22),
                 "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=30",
                 "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10"]

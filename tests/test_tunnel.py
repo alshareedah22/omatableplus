@@ -151,5 +151,24 @@ class TunnelSshdTest(unittest.TestCase):
             sshd.close()
 
 
+class ForwardHost(unittest.TestCase):
+    def test_accepts_names_and_addresses(self):
+        for host, want in (("db", "db"), ("127.0.0.1", "127.0.0.1"), ("db.internal", "db.internal"),
+                           ("::1", "[::1]"), ("[::1]", "[::1]"), ("fe80::1", "[fe80::1]"), ("", "127.0.0.1")):
+            self.assertEqual(tunnel.forward_host(host), want, host)
+
+    def test_refuses_anything_that_could_change_the_forward_spec(self):
+        for host in ("a:b", "1.2.3.4:5", "-oProxyCommand=x", "a b", "a\nb", "db;ls", "[a:b]"):
+            with self.assertRaises(Error, msg=host):
+                tunnel.forward_host(host)
+
+    def test_command_uses_the_checked_host(self):
+        argv = tunnel.Tunnel({"host": "jump", "user": "me", "auth": "agent"}, "::1", 5432).command(6000)
+        self.assertIn("127.0.0.1:6000:[::1]:5432", argv)
+        with self.assertRaises(Error):
+            tunnel.Tunnel({"host": "jump", "user": "me", "auth": "agent"}, "db:22", 5432).command(6000)
+
+
+
 if __name__ == "__main__":
     unittest.main()

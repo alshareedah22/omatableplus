@@ -6,6 +6,23 @@ Redis/Valkey and a document browser for MongoDB.
 
 ![OmaTablePlus: a TablePlus-style database client for the Omarchy desktop](preview.png)
 
+**Compatibility:** works with Omarchy 4.5 (checked on 4.5.0-3: manifest validation, the plugin's own tests, and every Omarchy component, command and bar interface it uses).
+
+## What's new in 2.0.1
+
+- **First-run setup now runs.** In 2.0.0 the bar icon started `true` instead of
+  `app/omatableplus setup`, so installing with `--enable` did not add the launcher entry, the
+  SUPER+ALT+T shortcut or the database drivers (reported by a user). Existing installs: run
+  `~/.config/omarchy/plugins/blackcode.omatableplus/app/omatableplus setup` once, or just update
+  the plugin and restart the shell (`omarchy restart shell`).
+- **MySQL/MariaDB passwords** with `#`, quotes or spaces are now quoted in the temporary option
+  file used for dumps and restores, so they no longer fail to log in.
+- **SSH tunnels** check the database host the tunnel forwards to: a host with `:` that is not an
+  IPv6 address, spaces or control characters is refused, and a bare IPv6 address is bracketed.
+- **TLS "require"** encrypts the connection but does not verify the server's certificate (MySQL
+  and PostgreSQL); use it against a server you trust, or tunnel over SSH.
+- Checked on Omarchy 4.5.
+
 ## What's new in 2.0.0
 
 - **Its own app.** OmaTablePlus runs in its own window and process, not inside the Omarchy

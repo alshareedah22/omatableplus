@@ -184,5 +184,27 @@ class MariaDBDumpTest(LiveMixin, unittest.TestCase):
             admin.query(f"DROP DATABASE IF EXISTS {db}")
 
 
+
+
+class MySqlOptionFile(unittest.TestCase):
+    def test_password_is_double_quoted_with_escapes(self):
+        from omatableplus import dump
+        self.assertEqual(dump._my_quote("plain"), '"plain"')
+        self.assertEqual(dump._my_quote('a #b'), '"a #b"')
+        self.assertEqual(dump._my_quote('q"uote'), '"q\\"uote"')
+        self.assertEqual(dump._my_quote("back\\slash"), '"back\\\\slash"')
+        self.assertEqual(dump._my_quote(" lead and trail "), '" lead and trail "')
+        self.assertEqual(dump._my_quote("no\r\nnewline"), '"nonewline"')
+
+    def test_the_option_file_holds_the_quoted_password_and_is_private(self):
+        import os
+        import stat
+        from omatableplus import dump
+        with dump._my_options({"host": "h", "user": "u", "password": "p #1"}, "mysql") as path:
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+            self.assertIn('password="p #1"', open(path).read())
+        self.assertFalse(os.path.exists(path))
+
+
 if __name__ == "__main__":
     unittest.main()

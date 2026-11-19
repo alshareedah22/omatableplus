@@ -151,6 +151,13 @@ PG_ARGS = ["--no-password"]
 
 # ---- MySQL / MariaDB ---------------------------------------------------------
 
+def _my_quote(value):
+    """A value for a my.cnf-style option file, double-quoted so '#', quotes and leading or
+    trailing spaces survive. Inside quotes the parser reads \\ and \" as escapes."""
+    text = str(value).replace("\r", "").replace("\n", "")
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 @contextlib.contextmanager
 def _my_options(c, engine):
     """A mode-600 option file with the connection, so the password stays off argv."""
@@ -158,7 +165,7 @@ def _my_options(c, engine):
     lines = ["[client]", f"host={c.get('host') or '127.0.0.1'}", f"port={c.get('port') or 3306}",
              f"user={c.get('user') or 'root'}"]
     if c.get("password"):
-        lines.append("password=" + str(c["password"]).replace("\\", "\\\\").replace("\n", ""))
+        lines.append("password=" + _my_quote(c["password"]))
     if tls == "disable":
         lines.append("skip-ssl" if engine == "mariadb" else "ssl-mode=DISABLED")
     elif tls == "prefer" and engine == "mariadb":

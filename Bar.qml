@@ -55,6 +55,14 @@ BarWidget {
     }
   }
 
-  Process { id: setup; command: ["true"] }
+  // First run: launcher entry, SUPER+ALT+T and the database drivers. `setup` is a no-op once it
+  // has run (done-marker and lock inside the launcher), so every copy of this widget may start it.
+  Process {
+    id: setup
+    command: [root.launcher, "setup"]
+    stderr: StdioCollector {
+      onStreamFinished: if (text.trim() !== "") console.warn("OmaTablePlus setup: " + text.trim())
+    }
+  }
   Component.onCompleted: setup.running = true
 }
