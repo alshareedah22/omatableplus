@@ -15,6 +15,7 @@ SQL_TYPES = {"tiny": "tinyint", "short": "smallint", "long": "int", "int24": "me
 
 class MySQL(SQLAdapter):
     engine = "mysql"
+    snapshot = "START TRANSACTION WITH CONSISTENT SNAPSHOT"
 
     def params(self):
         c = self.conn

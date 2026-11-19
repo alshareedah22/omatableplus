@@ -13,6 +13,7 @@ HIDDEN_SCHEMAS = ("NOT IN ('pg_catalog', 'information_schema') AND {0} NOT LIKE 
 
 class Postgres(SQLAdapter):
     engine = "postgresql"
+    snapshot = "BEGIN ISOLATION LEVEL REPEATABLE READ"
 
     def connect(self, database=None):
         import psycopg

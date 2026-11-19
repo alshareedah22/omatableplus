@@ -25,9 +25,13 @@ PIP_TIMEOUT = 600
 LOCK = os.environ.get("OMATABLEPLUS_LOCK") or os.path.join(HERE, "requirements.lock")
 
 
+EVENTS_TO_STDERR = False   # `tablectl mcp`: stdout belongs to the MCP client, so our events go to stderr
+
+
 def emit(obj):
-    sys.stdout.write(json.dumps(obj) + "\n")
-    sys.stdout.flush()
+    stream = sys.stderr if EVENTS_TO_STDERR else sys.stdout
+    stream.write(json.dumps(obj) + "\n")
+    stream.flush()
 
 
 def stamp():
@@ -106,11 +110,15 @@ def migrate():
 
 
 def main():
+    global EVENTS_TO_STDERR
+    mcp = sys.argv[1:2] == ["mcp"]
+    EVENTS_TO_STDERR = mcp
     migrate()
     python = ensure_venv()
     # No __pycache__ in the plugin folder: the shell reloads a plugin whose files change, which closes the window.
     env = dict(os.environ, PYTHONPATH=HERE, PYTHONDONTWRITEBYTECODE="1")
-    os.execve(python, [python, "-m", "omatableplus"], env)
+    module = ["-m", "omatableplus.mcp", *sys.argv[2:]] if mcp else ["-m", "omatableplus"]
+    os.execve(python, [python, *module], env)
 
 
 if __name__ == "__main__":

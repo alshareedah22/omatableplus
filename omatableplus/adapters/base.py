@@ -17,6 +17,7 @@ MAX_ROWS = 1000
 
 class SQLAdapter:
     engine = ""
+    snapshot = "BEGIN"     # opens a read that sees one state of the data
     running = False
     cancelled = False
 
@@ -227,6 +228,22 @@ class SQLAdapter:
             "key": key, "editable": bool(key), "offset": max(0, int(offset)), "limit": int(limit),
             "ms": round((time.monotonic() - start) * 1000),
         }
+
+    def page(self, schema, table, offset=0, limit=300, sort=(), filters=(), match="and"):
+        """A page and the number of matching rows, read from one snapshot."""
+        out = {}
+        with self.guard():
+            cur = self.db.cursor()
+            try:
+                cur.execute(self.snapshot)
+                try:
+                    out = self.rows(schema, table, offset, limit, sort, filters, match)
+                    out["matched"] = self.count(schema, table, filters, match)["count"]
+                finally:
+                    cur.execute("ROLLBACK")
+            finally:
+                cur.close()
+        return out
 
     def count(self, schema, table, filters=(), match="and"):
         names = [c["name"] for c in self.columns(schema, table)]

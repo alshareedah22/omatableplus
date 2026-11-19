@@ -157,6 +157,11 @@ def build(store, server=None, sessions=None):
         s = sessions.get(session)
         return s.run(s.adapter.rows, schema, table, offset, limit, sort or [], filters or [], match)
 
+    @server.method("table.page")
+    def table_page(session, schema, table, offset=0, limit=300, sort=None, filters=None, match="and"):
+        s = sessions.get(session)
+        return s.run(s.adapter.page, schema, table, offset, limit, sort or [], filters or [], match)
+
     @server.method("table.count")
     def table_count(session, schema, table, filters=None, match="and"):
         s = sessions.get(session)
