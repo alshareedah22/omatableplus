@@ -139,7 +139,7 @@ MenuBar {
   Menu_ {
     title: "Help"
     Item_ { text: "Keyboard shortcuts"; run: function() { bar.win.showShortcuts() } }
-    Item_ { text: "README on GitHub"; run: function() { Qt.openUrlExternally("https://github.com/alshareedah22/omatableplus#readme") } }
+    Item_ { text: "README on GitHub"; run: function() { Qt.openUrlExternally("https://github.com/blackcodesh/omatableplus#readme") } }
     Item_ { text: "About OmaTablePlus"; run: function() { bar.win.showAbout() } }
   }
 }

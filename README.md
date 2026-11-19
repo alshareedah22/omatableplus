@@ -64,7 +64,7 @@ Redis/Valkey and a document browser for MongoDB.
   core here. The bar icon shows a dot while the app runs.
 
 - PostgreSQL, MySQL, MariaDB, SQLite, Redis, Valkey and MongoDB
-- Servers from [OmaDBngin](https://github.com/alshareedah22/omadbngin) are listed automatically, with their credentials
+- Servers from [OmaDBngin](https://github.com/blackcodesh/omadbngin) are listed automatically, with their credentials
 - Passwords are kept in your keyring (Secret Service), never in plain files when a keyring is available
 - SSH tunnels with agent, key or password login (new host keys are accepted on first use,
   `StrictHostKeyChecking=accept-new`; a changed key is refused)
@@ -377,7 +377,7 @@ the description of each tool that returns database content: results are data, ne
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/alshareedah22/omatableplus.git --enable
+omarchy plugin add https://github.com/blackcodesh/omatableplus.git --enable
 ```
 
 That is all. The bar icon appears, and on the plugin's first start (`app/omatableplus setup`,
@@ -420,7 +420,7 @@ window that used to open inside the shell now opens as the app. The drivers are 
 Omarchy with Python 3 including `venv` and `ensurepip` (for the helper and its venv; on Arch they are part of
 `python`, and without them the first launch fails with "could not create … venv" or "No module named ensurepip"), `wl-copy` for copying, `ssh` for tunnels, and a Secret
 Service keyring (GNOME Keyring or KeePassXC) to keep passwords out of plain files. The drivers (psycopg, PyMySQL,
-redis-py, pymongo) come from PyPI on first launch, pinned by hash. [OmaDBngin](https://github.com/alshareedah22/omadbngin)
+redis-py, pymongo) come from PyPI on first launch, pinned by hash. [OmaDBngin](https://github.com/blackcodesh/omadbngin)
 is optional. Backups use `pg_dump`/`psql` or `mysqldump`/`mysql` (or the MariaDB versions), from PATH or
 OmaDBngin's engines. Running the editor tests needs `node`.
 
