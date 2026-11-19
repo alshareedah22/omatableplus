@@ -30,6 +30,14 @@ class SQLTest(unittest.TestCase):
         self.assertTrue(self.writes("SELECT * FROM t INTO OUTFILE '/tmp/x'", "mysql"))
         self.assertFalse(self.writes("EXPLAIN DELETE FROM t"))  # plans without running
 
+    def test_a_pragma_called_like_a_function_writes_unless_it_only_looks_something_up(self):
+        for sql in ("PRAGMA table_info(t)", "PRAGMA main.index_list(t)", "pragma foreign_key_list ( 't' )",
+                    "PRAGMA table_xinfo('t')", "PRAGMA integrity_check(10)", "PRAGMA user_version"):
+            self.assertFalse(self.writes(sql, "sqlite"), sql)
+        for sql in ("PRAGMA user_version(9)", "PRAGMA main.user_version(9)", "PRAGMA journal_mode(WAL)",
+                    "PRAGMA user_version(table_info)", "/* c */ PRAGMA user_version(9)", "PRAGMA writable_schema(1)"):
+            self.assertTrue(self.writes(sql, "sqlite"), sql)
+
     def test_only_writes_returned(self):
         self.assertEqual(safety.sql_writes(["SELECT 1", "DELETE FROM t", "SHOW x"], "mysql"), ["DELETE FROM t"])
 
