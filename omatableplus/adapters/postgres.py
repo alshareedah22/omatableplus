@@ -1,6 +1,7 @@
 """PostgreSQL through psycopg 3."""
 
 import json
+import os
 
 from .. import explain
 from ..protocol import Error
@@ -21,16 +22,33 @@ class Postgres(SQLAdapter):
         c = self.conn
         dbname = database or self.database or "postgres"
         with self.guard():
-            db = psycopg.connect(host=c.get("host") or "127.0.0.1", port=int(c.get("port") or 5432),
-                                 user=c.get("user") or None, password=c.get("password") or None,
-                                 dbname=dbname, sslmode=c.get("tls") or "prefer", connect_timeout=10,
-                                 application_name="OmaTablePlus", autocommit=True,
-                                 # read-only connections are read-only on the server too
-                                 options="-c default_transaction_read_only=on" if c.get("readonly") else None)
+            db = psycopg.connect(**self.params(dbname), connect_timeout=10, application_name="OmaTablePlus",
+                                 autocommit=True, options=self.options())
         self.close()
         self.db = db
         self.database = dbname
         self.forget()
+
+    def params(self, dbname):
+        """The libpq parameters. A connection made through MCP never takes a password from PGPASSWORD or a
+        .pgpass file: the model chose its user and port, and an ambient password would log it in as that user."""
+        c = self.conn
+        out = {"host": c.get("host") or "127.0.0.1", "port": int(c.get("port") or 5432),
+               "user": c.get("user") or None, "password": c.get("password") or None,
+               "dbname": dbname, "sslmode": c.get("tls") or "prefer"}
+        if c.get("mcp_created"):
+            out.update(password=c.get("password") or "", passfile=os.devnull)
+        return out
+
+    def options(self):
+        """Server settings given at connect time: read-only, and the MCP server's statement timeout."""
+        c = self.conn
+        out = []
+        if c.get("readonly") or c.get("db_readonly"):
+            out.append("-c default_transaction_read_only=on")     # read-only connections are read-only on the server too
+        if c.get("statement_timeout"):
+            out.append(f"-c statement_timeout={int(c['statement_timeout']) * 1000}")
+        return " ".join(out) or None
 
     def translate(self, exc):
         psycopg = self.psycopg

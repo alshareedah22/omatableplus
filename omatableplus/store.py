@@ -125,6 +125,8 @@ def validate(conn):
            "folder": _str(conn, "folder", 64), "readonly": bool(conn.get("readonly")),
            "host": "", "port": 0, "user": _str(conn, "user", 128), "database": _str(conn, "database", 128),
            "path": "", "tls": conn.get("tls") or "prefer", "ssh": None}
+    if conn.get("mcp_created"):
+        out["mcp_created"] = True       # made through MCP: never takes a password from PGPASSWORD, .pgpass...
     if out["tls"] not in ("disable", "prefer", "require"):
         raise Error("invalid", "tls must be disable, prefer or require")
     if engine == "sqlite":

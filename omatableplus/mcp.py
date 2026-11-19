@@ -7,7 +7,8 @@ read-only connections and production tags behave exactly as they do in the windo
 Rules that keep a model from doing more than a person at the window could:
   * the helper's `confirmed` flag is never an argument: a production write is refused, not confirmed;
   * three tiers chosen at launch, never by the model: read (default), --write, --destructive (implies --write);
-  * without --write every SQL session is opened read-only, which the database driver enforces;
+  * without --write every SQL session is opened read-only, which the database driver enforces; so is a session
+    on a connection tagged production, whatever the tier;
   * Redis and MongoDB are read only, and files only live in one folder (see mcpfiles).
 
 Requests are served one at a time.
@@ -28,8 +29,10 @@ from .mcp_nosql import NosqlTools
 from .mcpfiles import Sandbox
 from .mcpschema import (CELL_LIMIT, CHANGES, CONNECTION, DATABASE, DEFAULT_ROWS, DESTRUCTIVE, FAMILIES, FILTERS,
                         HISTORY_LIMIT, MATCH_LIMIT, READ, ROWS, SCHEMA, SORT, SQL, SQL_ENGINES, TABLE, WRITE,
-                        check, page_size, schema_of, shrink, shrink_rows)
-from .mcpsql import refuse_destructive, refuse_file_effects, refuse_session_escapes
+                        DATA_NOTE, check, export_limits, page_size, schema_of, shrink, shrink_rows,
+                        statement_timeout)
+from .mcpsql import (redact_all, refuse_destructive, refuse_file_effects, refuse_server_changes,
+                     refuse_server_control, refuse_session_escapes)
 from .protocol import Error, encode
 
 SUPPORTED = ("2024-11-05", "2025-03-26", "2025-06-18")
@@ -59,6 +62,14 @@ INSTRUCTIONS = {
                   "preview_changes, preview_alter_table, preview_user_change. Import, export, backup and restore "
                   "only use files of the MCP files folder (list_files)."),
 }
+
+INSTRUCTIONS = {tier: text + DATA_NOTE for tier, text in INSTRUCTIONS.items()}
+
+# the tools whose answer holds text that comes from the database or from files
+DATA_TOOLS = {"list_databases", "list_objects", "describe_object", "search_schema", "search_rows", "execute_sql",
+              "explain_sql", "recent_queries", "list_relations", "list_saved_queries", "list_processes", "list_users",
+              "get_user_grants", "preview_changes", "preview_import", "redis_scan", "redis_get", "redis_keyspace",
+              "mongo_find", "mongo_count", "mongo_indexes", "mongo_aggregate"}
 
 # name, description, properties, required, tier
 SQL_TOOLS = (
@@ -142,7 +153,10 @@ class McpServer(AdminTools, NosqlTools):
         self.elicits = False        # did the client say it can put a question to a person?
         self.questions = 0
         enabled = {READ} | ({WRITE} if self.write else set()) | ({DESTRUCTIVE} if destructive else set())
-        self.tools = {name: {"description": description, "inputSchema": schema_of(properties, required)}
+        self.timeout = statement_timeout()      # seconds, 0 = none: for the sessions of this server only
+        self.export_rows, self.export_bytes = export_limits()
+        self.tools = {name: {"description": description + (DATA_NOTE if name in DATA_TOOLS else ""),
+                             "inputSchema": schema_of(properties, required)}
                       for name, description, properties, required, tier in TOOLS if tier in enabled}
         self.requests = {"initialize": self.initialize, "ping": lambda params: {}, "tools/list": self.tools_list,
                          "tools/call": self.tools_call}
@@ -283,7 +297,10 @@ class McpServer(AdminTools, NosqlTools):
         return by_id or [c for c in connections if str(c.get("name", "")).lower() == ref.lower()]
 
     def session(self, ref, database=None, engines=SQL_ENGINES, readonly=None):
-        """readonly=True asks for a session the driver keeps read-only whatever the mode (exports, NoSQL)."""
+        """readonly=True asks for a session the driver keeps read-only whatever the mode (exports, NoSQL).
+
+        A connection tagged production is read-only at the database in every tier (db_readonly): the helper still
+        answers its writes with "confirm", and a SELECT cannot call a function that writes."""
         readonly = not self.write if readonly is None else readonly
         conn = self.connection(ref, engines)
         key = (conn["id"], readonly)
@@ -292,7 +309,8 @@ class McpServer(AdminTools, NosqlTools):
                 self.guards(self.helper.sessions.items[sid].conn) != self.guards(conn, readonly):
             self.helper.sessions.close(sid)     # the connection was retagged or made read-only since it opened
         if sid not in self.helper.sessions.items:
-            opened = self.methods["session.open"](id=conn["id"], readonly=readonly)
+            opened = self.methods["session.open"](id=conn["id"], readonly=readonly, timeout=self.timeout,
+                                                  db_readonly=conn.get("tag") == "production")
             sid = self.open[key] = opened["session"]
             self.home[sid] = opened["database"]
         self.use_database(sid, database)
@@ -374,6 +392,10 @@ class McpServer(AdminTools, NosqlTools):
         refuse_session_escapes(sql, engine)
         if self.write and not self.destructive:
             refuse_destructive(sql, engine)
+        elif not self.write:
+            refuse_server_changes(sql, engine)
+        if not self.destructive:
+            refuse_server_control(sql, engine)
         out = self.methods["query.run"](session=self.session(connection, database), text=sql)
         return {"database": out["database"], "results": [self.result(r, page_size(max_rows)) for r in out["results"]]}
 
@@ -393,13 +415,15 @@ class McpServer(AdminTools, NosqlTools):
         engine = self.connection(connection)["engine"]
         refuse_file_effects(sql, engine)
         refuse_session_escapes(sql, engine)
+        if not self.destructive:
+            refuse_server_control(sql, engine)
         out = self.methods["query.explain"](session=self.session(connection, database), text=sql, analyze=analyze)
         return {k: v for k, v in out.items() if k != "range"}
 
     def tool_recent_queries(self, connection, search="", limit=20):
         items = self.methods["query.history"](conn=self.connection(connection)["id"], search=search,
                                               limit=max(1, min(limit, HISTORY_LIMIT)))
-        return {"items": [{**{k: v for k, v in item.items() if k != "conn"}, "sql": shrink(str(item.get("sql", "")))}
+        return {"items": [{**{k: v for k, v in item.items() if k != "conn"}, "sql": shrink(redact_all(str(item.get("sql", ""))))}
                           for item in items["items"]]}
 
     def tool_preview_changes(self, connection, schema, table, database=None, inserts=None, updates=None, deletes=None):

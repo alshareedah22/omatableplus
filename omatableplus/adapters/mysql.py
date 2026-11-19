@@ -22,9 +22,13 @@ class MySQL(SQLAdapter):
         tls = c.get("tls") or "prefer"
         extra = {"ssl_disabled": True} if tls == "disable" else \
             {"ssl": {"check_hostname": False}} if tls == "require" else {}
-        return {"host": c.get("host") or "127.0.0.1", "port": int(c.get("port") or 3306),
-                "user": c.get("user") or None, "password": c.get("password") or "",
-                "connect_timeout": 10, "charset": "utf8mb4", **extra}
+        out = {"host": c.get("host") or "127.0.0.1", "port": int(c.get("port") or 3306),
+               "user": c.get("user") or None, "password": c.get("password") or "",
+               "connect_timeout": 10, "charset": "utf8mb4", **extra}
+        if c.get("mcp_created"):
+            # PyMySQL reads no option file and no MYSQL_PWD unless asked; keep it so for a model's connection
+            out.update(read_default_file=None, read_default_group=None)
+        return out
 
     def connect(self):
         import pymysql
@@ -35,10 +39,24 @@ class MySQL(SQLAdapter):
             # update that keeps a value still counts as touching its row.
             self.db = pymysql.connect(**self.params(), database=self.database or None,
                                       autocommit=True, client_flag=CLIENT.FOUND_ROWS)
-            if self.conn.get("readonly"):
+            if self.conn.get("readonly") or self.conn.get("db_readonly"):
                 # read-only connections are read-only on the server too
                 with self.db.cursor() as cur:
                     cur.execute("SET SESSION TRANSACTION READ ONLY")
+            for sql in self.limit_statements():
+                try:
+                    with self.db.cursor() as cur:
+                        cur.execute(sql)
+                    break
+                except Exception:  # noqa: BLE001 - the other server flavour names it differently
+                    continue
+
+    def limit_statements(self):
+        """The MCP server's statement timeout: MySQL max_execution_time (ms), else MariaDB max_statement_time (s)."""
+        seconds = int(self.conn.get("statement_timeout") or 0)
+        if not seconds:
+            return []
+        return [f"SET SESSION max_execution_time = {seconds * 1000}", f"SET SESSION max_statement_time = {seconds}"]
 
     def interrupt(self):
         # The running connection is busy, so kill its query from a second one.

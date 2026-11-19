@@ -82,11 +82,16 @@ class Sessions:
             return omadb.server(str(conn_id)[6:])
         return self.store.get(conn_id, secrets=True)
 
-    def open(self, conn_id, readonly=False):
+    def open(self, conn_id, readonly=False, db_readonly=False, timeout=0):
         conn = self.resolve(conn_id)
         if readonly:
             # read-only can be asked for at connect time (OmaDBngin servers have no saved switch)
             conn = {**conn, "readonly": True}
+        if db_readonly:
+            # read-only at the database only: the helper still answers a production write with "confirm"
+            conn = {**conn, "db_readonly": True}
+        if timeout:
+            conn = {**conn, "statement_timeout": int(timeout)}      # seconds; the MCP server's sessions only
         adapter, tunnel = connect(conn)
         session = Session(uuid.uuid4().hex[:12], conn, adapter, tunnel)
         with self.lock:

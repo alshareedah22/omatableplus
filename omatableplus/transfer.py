@@ -108,7 +108,7 @@ class SQLWriter:
 WRITERS = {"csv": CSVWriter, "json": JSONWriter, "sql": SQLWriter}
 
 
-def export(adapter, target, fmt, path, overwrite=False, table_name=None):
+def export(adapter, target, fmt, path, overwrite=False, table_name=None, max_rows=None, max_bytes=None):
     if fmt not in FORMATS:
         raise Error("invalid", f"unknown format {fmt!r}")
     d = adapter.d
@@ -136,6 +136,14 @@ def export(adapter, target, fmt, path, overwrite=False, table_name=None):
                     started = True
                 writer.rows(names, rows)
                 count += len(rows)
+                if max_rows and count > max_rows:
+                    raise Error("limit", f"the export passed {max_rows} rows, so it was stopped and nothing was written; "
+                                         "export fewer rows (filters or a LIMIT)")
+                if max_bytes:
+                    f.flush()
+                    if os.fstat(f.fileno()).st_size > max_bytes:
+                        raise Error("limit", f"the export passed {max_bytes // (1 << 20)} MB, so it was stopped and "
+                                             "nothing was written; export fewer rows (filters or a LIMIT)")
             writer.close()
         os.replace(tmp, path)
     except BaseException:

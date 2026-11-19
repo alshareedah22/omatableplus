@@ -14,7 +14,7 @@ import os
 from .mcpfiles import digest, glance
 from .mcpschema import (CONNECTION, DATABASE, DESTRUCTIVE, FILE, FILTERS, READ, SCHEMA, SERVER_ENGINES, SORT, SQL,
                         TABLE, WRITE, shrink, trim)
-from .mcpsql import refuse_unless_read
+from .mcpsql import redact_all, refuse_unless_read
 from .protocol import Error
 
 SPEC = {"type": "object", "description": "Fields of the change. Passwords are not accepted here: set them in the "
@@ -83,13 +83,14 @@ TOOLS = (
      {"connection": CONNECTION, "name": {"type": "string", "description": "New database name."}},
      ("connection", "name"), WRITE),
     ("create_connection", "Save a connection to a PostgreSQL or MySQL/MariaDB server, for this machine or a host "
-     "that a saved connection already uses. It is created read-only and tagged production, without a password: "
-     "a person completes and relaxes it in the window.",
+     "that a saved connection already uses. Give the port and the user. It is created read-only and tagged "
+     "production, without a password, and never takes one from PGPASSWORD or ~/.pgpass: a person completes and "
+     "relaxes it in the window.",
      {"name": {"type": "string"}, "engine": {"type": "string", "description": "postgresql, mysql or mariadb."},
       "host": {"type": "string"}, "port": {"type": "integer"}, "user": {"type": "string"},
       "database": {"type": "string"}, "folder": {"type": "string"},
       "tls": {"type": "string", "description": "disable, prefer (default) or require."}},
-     ("name", "engine", "host"), WRITE),
+     ("name", "engine", "host", "port", "user"), WRITE),
     ("duplicate_connection", "Copy a saved connection with its tag and read-only switch.",
      {"connection": CONNECTION}, ("connection",), WRITE),
 
@@ -124,6 +125,7 @@ TOOLS = (
      ("connection",), DESTRUCTIVE),
 )
 
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 PUBLIC_CONNECTION = ("id", "name", "engine", "tag", "readonly", "host", "port", "database", "folder")
 
 
@@ -135,11 +137,11 @@ class AdminTools:
         return trim(self.methods["schema.relations"](session=self.session(connection, database), schema=schema))
 
     def tool_list_saved_queries(self):
-        return {"items": [{key: shrink(value) for key, value in item.items()}
+        return {"items": [{key: shrink(redact_all(value)) for key, value in item.items()}
                           for item in self.methods["query.saved"]()["items"]]}
 
     def tool_list_processes(self, connection):
-        return trim(self.methods["server.processes"](session=self.session(connection)))
+        return trim(redact_all(self.methods["server.processes"](session=self.session(connection))))
 
     def tool_list_users(self, connection):
         return trim(self.methods["users.list"](session=self.session(connection)))
@@ -193,7 +195,8 @@ class AdminTools:
         target = self.export_target(sql, schema, table, filters, sort, match, self.connection(connection)["engine"])
         path = self.files.new(file)
         out = self.methods["export.run"](session=self.session(connection, database, readonly=True), target=target,
-                                         format=format, path=path, overwrite=False, table_name=table_name)
+                                         format=format, path=path, overwrite=False, table_name=table_name,
+                                         max_rows=self.export_rows, max_bytes=self.export_bytes)
         return {"file": file, "rows": out["rows"], "bytes": out["bytes"]}
 
     @staticmethod
@@ -217,14 +220,17 @@ class AdminTools:
     def tool_create_database(self, connection, name):
         return self.methods["db.create"](session=self.session(connection), name=name)
 
-    def tool_create_connection(self, name, engine, host, port=None, user="", database="", folder="", tls="prefer"):
+    def tool_create_connection(self, name, engine, host, port, user, database="", folder="", tls="prefer"):
         if engine not in SERVER_ENGINES:
             raise Error("invalid", f"engine must be one of {', '.join(SERVER_ENGINES)}")
+        if not user.strip() or port < 1:
+            raise Error("invalid", "give the user and the port: a connection made over MCP never takes them, or a "
+                                   "password, from the environment")
         host = host.strip()
         self.refuse_unknown_host(host)
         saved = self.helper.sessions.store.save({
-            "name": name, "engine": engine, "host": host, "port": port, "user": user, "database": database,
-            "folder": folder, "tls": tls, "tag": "production", "readonly": True})
+            "name": name, "engine": engine, "host": host, "port": port, "user": user.strip(), "database": database,
+            "folder": folder, "tls": tls, "tag": "production", "readonly": True, "mcp_created": True})
         return {key: saved[key] for key in PUBLIC_CONNECTION if key in saved}
 
     def tool_duplicate_connection(self, connection):
@@ -291,6 +297,7 @@ class AdminTools:
         return self.methods["server.kill"](session=self.session(connection), id=process_id, hard=hard)
 
     def tool_change_user(self, connection, op, spec):
+        self.refuse_risky_user_change(self.connection(connection)["engine"], op, spec)
         return self.methods["users.change"](session=self.session(connection), op=op, spec=self.without_secret(spec))
 
     def tool_delete_saved_query(self, query_id):
@@ -327,6 +334,32 @@ class AdminTools:
             raise Error("readonly", f"{name} is read-only, so MCP does not allow {doing} it. Do it in the OmaTablePlus window.")
         if conn.get("tag") == "production":
             raise Error("confirm", f"{name} is tagged production and MCP cannot confirm {doing} it.")
+
+    @staticmethod
+    def refuse_risky_user_change(engine, op, spec):
+        """What no model should do with a user, even with --destructive: make a superuser, an account that can make
+        accounts, a global grant, a grant that can be passed on, or a login nobody gave a password (MCP cannot)."""
+        spec = spec if isinstance(spec, dict) else {}
+        local = str(spec.get("host") or "%").strip().lower() in LOCAL_HOSTS
+        privileges = {str(p).upper().strip() for p in spec.get("privileges") or () if isinstance(p, str)}
+        why = None
+        if spec.get("superuser"):
+            why = "a superuser"
+        elif spec.get("createrole") and spec.get("login", True):
+            why = "a role that can create roles and log in"
+        elif op == "grant" and spec.get("scope") == "global":
+            why = "a global (*.*) grant"
+        elif op == "grant" and ("GRANT OPTION" in privileges or spec.get("grant_option") or spec.get("admin_option")):
+            why = "a grant that can be passed on"
+        elif op == "create" and spec.get("locked"):
+            return
+        elif op == "create" and engine == "postgresql" and spec.get("login", True):
+            why = "a role that can log in and has no password"
+        elif op == "create" and engine != "postgresql" and not local:
+            why = "an account without a password that any host may use"
+        if why:
+            raise Error("invalid", f"MCP does not create {why} (passwords cannot be given over MCP, and rights this "
+                                   "wide are for a person). Do it in the OmaTablePlus window.")
 
     @staticmethod
     def without_secret(spec):

@@ -685,7 +685,12 @@ class WriteToolsTest(Fixture):
 
     def test_create_connection_is_read_only_production_and_has_no_password(self):
         is_error, payload = self.client.call("create_connection", name="New", engine="postgresql", host="db.example",
-                                             user="reader", database="app")
+                                             port=5432, user="reader", database="app")
+        self.assertFalse(is_error, payload)
+        saved = self.store.get(payload["id"], secrets=True)
+        self.assertTrue(saved["mcp_created"])
+        is_error, payload = self.client.call("create_connection", name="New2", engine="postgresql", host="db.example",
+                                             port=5432, user="reader", database="app")
         self.assertFalse(is_error, payload)
         saved = self.store.get(payload["id"], secrets=True)
         self.assertEqual((saved["readonly"], saved["tag"], saved["password"]), (True, "production", ""))
@@ -694,26 +699,27 @@ class WriteToolsTest(Fixture):
     def test_create_connection_only_for_a_host_the_person_already_uses_or_this_machine(self):
         # libpq completes a missing password from ~/.pgpass and PGPASSWORD, whatever host it is told to reach
         is_error, payload = self.client.call("create_connection", name="Evil", engine="postgresql",
-                                             host="attacker.example")
+                                             host="attacker.example", port=5432, user="postgres")
         self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"))
         self.assertIn("attacker.example", payload["error"]["message"])
         self.assertEqual([c["name"] for c in self.store.list() if c["name"] == "Evil"], [])
         for n, host in enumerate(("localhost", "127.0.0.1", "::1", "127.0.0.5", "DB.EXAMPLE", " db.example ")):
-            is_error, payload = self.client.call("create_connection", name=f"Ok {n}", engine="postgresql", host=host)
+            is_error, payload = self.client.call("create_connection", name=f"Ok {n}", engine="postgresql", host=host,
+                                                 port=5432, user="u")
             self.assertFalse(is_error, (host, payload))
 
     def test_create_connection_only_for_server_engines_and_with_no_guard_switch(self):
         is_error, payload = self.client.call("create_connection", name="File", engine="sqlite", host="x")
         self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"))
         for extra in ({"tag": "local"}, {"readonly": False}, {"password": "p"}, {"path": "/etc/passwd"}):
-            is_error, payload = self.client.call("create_connection", name="N", engine="mysql", host="h", **extra)
+            is_error, payload = self.client.call("create_connection", name="N", engine="mysql", host="h", port=3306, user="u", **extra)
             self.assertEqual((is_error, payload["error"]["code"]), (True, "invalid"), extra)
         self.assertEqual([c["name"] for c in self.store.list() if c["name"] in ("File", "N")], [])
 
     def test_a_host_is_known_whatever_the_case_the_saved_connection_wrote_it_in(self):
         self.store.save({"name": "Shouting", "engine": "postgresql", "host": "Db.Example.COM", "tag": "local"})
         is_error, payload = self.client.call("create_connection", name="Quiet", engine="postgresql",
-                                             host="db.example.com")
+                                             host="db.example.com", port=5432, user="u")
         self.assertFalse(is_error, payload)
 
     def test_two_saved_connections_with_the_same_name_are_not_copied_by_name(self):

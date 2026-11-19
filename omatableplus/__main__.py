@@ -102,8 +102,8 @@ def build(store, server=None, sessions=None):
         return sessions.test(conn)
 
     @server.method("session.open")
-    def session_open(id, readonly=False):  # noqa: A002
-        return sessions.open(id, bool(readonly))
+    def session_open(id, readonly=False, db_readonly=False, timeout=0):  # noqa: A002
+        return sessions.open(id, bool(readonly), bool(db_readonly), timeout)
 
     @server.method("session.close")
     def session_close(session):
@@ -260,9 +260,10 @@ def build(store, server=None, sessions=None):
         return s.run(s.adapter.truncate, schema, table)
 
     @server.method("export.run")
-    def export_run(session, target, format, path, overwrite=False, table_name=None):  # noqa: A002
+    def export_run(session, target, format, path, overwrite=False, table_name=None, max_rows=None,  # noqa: A002
+                   max_bytes=None):
         s = sessions.get(session)
-        return s.run(transfer.export, s.adapter, target, format, path, overwrite, table_name)
+        return s.run(transfer.export, s.adapter, target, format, path, overwrite, table_name, max_rows, max_bytes)
 
     @server.method("import.preview")
     def import_preview(path, delimiter=None):

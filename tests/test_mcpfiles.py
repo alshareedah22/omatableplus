@@ -385,12 +385,14 @@ class SandboxTest(unittest.TestCase):
         self.assertNotIn("w" * 97 + "...", text)
 
     def test_glance_reads_a_physical_line_of_more_than_4096_bytes_as_one_line(self):
-        # the part after the 4096th byte is not the start of a line: it must not count as one nor be run-checked
+        # the part after the 4096th byte is not the start of a line, but a command in the middle of one still runs
         self.written("long.sql", b"SELECT 1;\n" + b"x" * 4096 + b"\\! id\n" + b"SELECT 2;\n")
         text = glance(self.box.existing("long.sql"))
         self.assertIn("3 lines", text)
-        self.assertNotIn("run as commands", text)
-        self.assertIn("  " + "x" * 100 + "...", text)
+        self.assertEqual(self.commands_of(text).count("x" * 100 + "..."), 1)
+        self.assertNotIn("\n  id", text)
+        self.written("clean.sql", b"SELECT 1;\n" + b"x" * 9000 + b"\nSELECT 2;\n")
+        self.assertNotIn("run as commands", glance(self.box.existing("clean.sql")))
 
     def test_glance_marks_and_counts_a_command_line_that_is_longer_than_4096_bytes(self):
         self.written("huge.sql", b"\\! " + b"y" * 5000 + b"\nSELECT 1;\n\\! id\n")

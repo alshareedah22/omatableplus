@@ -2,6 +2,7 @@
 
 import os
 import sqlite3
+import time
 import urllib.parse
 
 from .. import explain
@@ -18,11 +19,27 @@ class SQLite(SQLAdapter):
         path = os.path.expanduser(self.conn.get("path") or "")
         if not os.path.isfile(path):
             raise Error("notfound", f"no SQLite file at {path}")
-        uri = "file:" + urllib.parse.quote(os.path.abspath(path)) + ("?mode=ro" if self.conn.get("readonly") else "?mode=rw")
+        uri = "file:" + urllib.parse.quote(os.path.abspath(path)) + ("?mode=ro" if self.conn.get("readonly") or self.conn.get("db_readonly") else "?mode=rw")
         with self.guard():
             self.db = sqlite3.connect(uri, uri=True, check_same_thread=False, isolation_level=None, timeout=5)
             self.db.execute("SELECT 1 FROM sqlite_master LIMIT 1")
+            if self.conn.get("statement_timeout"):
+                self.db.set_progress_handler(self.deadline(float(self.conn["statement_timeout"])), 10000)
         self.database = SCHEMA
+
+    @staticmethod
+    def deadline(seconds):
+        """A progress handler that interrupts a statement running longer than `seconds`. The handler only runs
+        while a statement does, so a long pause since its last call means a new statement has begun."""
+        state = {"start": None, "last": 0.0}
+
+        def handler():
+            now = time.monotonic()
+            if state["start"] is None or now - state["last"] > 1.0:
+                state["start"] = now
+            state["last"] = now
+            return 1 if now - state["start"] > seconds else 0
+        return handler
 
     def translate(self, exc):
         if isinstance(exc, sqlite3.DatabaseError) and "not a database" in str(exc):

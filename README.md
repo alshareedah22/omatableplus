@@ -8,6 +8,28 @@ Redis/Valkey and a document browser for MongoDB.
 
 **Compatibility:** works with Omarchy 4.5 (checked on 4.5.0-3: manifest validation, the plugin's own tests, and every Omarchy component, command and bar interface it uses).
 
+## What's new in 2.1.0
+
+- **Color picker** in the connection form (by vgrbr).
+- **Import from URL**: a new connection can start from a pasted database URL, with a warning when the URL asks for
+  something OmaTablePlus does not do, such as certificate verification (by vgrbr).
+- **MCP server** (`tablectl mcp`, opt-in, nothing runs unless you start it): lets an AI agent browse, query and administer
+  your saved connections in three tiers chosen at launch (read, `--write`, `--destructive`), with a file sandbox and SQL
+  guards (by joemugen). See "MCP server" and its "Security model" below.
+- **MCP hardening** added in this release after a security review:
+  - connections tagged production or read-only are read-only at the database in every tier;
+  - below `--destructive`, creating or changing users, roles, functions, procedures, triggers, extensions and server
+    settings is refused, as are server-control functions such as `pg_terminate_backend` and advisory locks;
+  - more file-reading functions are refused, and a backup or restore file is checked for client commands anywhere in a
+    line (`\!`, `pager`, `tee`, `edit`), not only at the start;
+  - connections created over MCP never use ambient credentials (`PGPASSWORD`, `~/.pgpass`);
+  - password literals are redacted from history, saved queries and process lists;
+  - a statement timeout (60 s by default, `OMATABLEPLUS_MCP_TIMEOUT`) and export caps (1,000,000 rows, 512 MB);
+  - accounts created over MCP cannot be superusers, global or grant-option accounts, or passwordless remote accounts;
+  - tool output is marked as data, not instructions.
+- **`PRAGMA name(value)`** now counts as a write in the window's read-only check, so it cannot change an SQLite setting in
+  Safe mode (by joemugen).
+
 ## What's new in 2.0.2
 
 - The helper now reports its real version (it said 2.0.0 in 2.0.1); a test keeps it in step with the manifest.
@@ -57,6 +79,9 @@ Redis/Valkey and a document browser for MongoDB.
   (`sslmode`, `ssl-mode`, `ssl`/`tls`, `rediss://`); `mongodb+srv://` is not supported. It warns when the URL asks for
   something the connection will not do as written: certificate verification (`verify-full`: the connection is
   encrypted, the certificate is not checked) or a relative SQLite path.
+- The **Color** field of the form has a color picker: click the swatch (or focus the field) for the preset engine colors, a
+  saturation and brightness square and a hue bar. Typing a hex value like `#336791` still works and moves the picker to match;
+  an empty field uses the engine's default color.
 - **Folder** in a connection's form groups it in the list (click a folder to fold it). **Read-only** makes a
   connection browse-and-query only: OmaTablePlus refuses every change before it is sent, and the server session is
   read-only too (PostgreSQL `default_transaction_read_only`, MySQL `SET SESSION TRANSACTION READ ONLY`, SQLite
@@ -260,15 +285,25 @@ What the agent may do is decided by **you, when you launch the server**, never b
 What keeps an agent from doing more than you would at the window:
 
 - **Production and Read-only connections refuse every change**, in every tier, `delete_connection` included. The agent
-  cannot confirm a production write, and `confirmed` is not an argument of any tool. Run it in the window. A
-  connection you retag or make read-only in the window is picked up by a server that is already running.
+  cannot confirm a production write, and `confirmed` is not an argument of any tool. Run it in the window. Their SQL
+  sessions are also opened read-only at the database, whatever the tier, so a `SELECT` that calls a function with side
+  effects (`nextval`, `setval`) fails there. A connection you retag or make read-only in the window is picked up by a
+  server that is already running.
 - **`DROP`, `TRUNCATE`, `GRANT`, `REVOKE` and `ALTER … DROP` through `execute_sql`** are refused below
   `--destructive`, and so are `PREPARE`, `EXECUTE`, `DO` and the SQLite `writable_schema` pragma, which can hide a drop
-  from the first word. That is a check on the first keyword, not a SQL parser: the rights of the database user remain
-  the real boundary (a stored procedure started with `CALL` can drop what its user may drop), so give the agent a user
-  that cannot do what you do not want done.
-- **SQL cannot reach files.** `execute_sql` and `explain_sql` refuse, in every tier, `ATTACH`, `VACUUM INTO`, `COPY`,
-  `LOAD` and `INTO OUTFILE / DUMPFILE`, and the `/*! … */` comments MySQL runs, which would hide them from the check.
+  from the first word. Also refused below `--destructive`: `CREATE` or `ALTER` of a user, role, function, procedure,
+  trigger, event, extension or language (a body can hide a `COPY … TO PROGRAM` or a `DROP`), `ALTER SYSTEM`,
+  `ALTER DEFAULT PRIVILEGES`, `RENAME USER`, `SET PASSWORD`, `SET ROLE`, `SET SESSION AUTHORIZATION`, MySQL
+  `SET GLOBAL / PERSIST / PERSIST_ONLY`, and the server-control functions callable from a `SELECT`
+  (`pg_terminate_backend`, `pg_cancel_backend`, `pg_reload_conf`, `pg_rotate_logfile`, `pg_switch_wal`,
+  `pg_create_restore_point`, `pg_promote`, `pg_wal_replay_pause`, `pg_drop_replication_slot`, the `pg_advisory_*`
+  locks, MySQL `GET_LOCK` and its kin). That is a check on the first keyword and the words of a statement, not a SQL
+  parser: see the security model below.
+- **SQL is kept away from files, as far as a check can.** `execute_sql` and `explain_sql` refuse, in every tier,
+  `ATTACH`, `VACUUM INTO`, `COPY`, `LOAD`, `INTO OUTFILE / DUMPFILE`, the file functions they know (`LOAD_FILE`,
+  `pg_read_file`, `pg_ls_dir`, `pg_ls_logdir` and the other `pg_ls_*` directories, `pg_current_logfile`, `lo_import`,
+  `lo_export`…), and the `/*! … */` comments MySQL runs, which would hide them from the check. A function of your own
+  that touches files is not seen.
 - **Files** are only named, never pathed: `import_csv`, `export_data`, `backup_database` and `restore_database` take a
   bare file name inside one folder, `~/Downloads/omatableplus-mcp` (change it with `--files-dir`). Nothing is
   overwritten and symbolic links are refused. The server also refuses a folder that your group or others can write to. The agent can create a file there only through `export_data` or
@@ -276,17 +311,24 @@ What keeps an agent from doing more than you would at the window:
   want imported yourself. `export_data` takes one `SELECT`, `WITH` or `VALUES`, on a read-only session, so it cannot
   be used to write to the database. `restore_database` loads at once a file that `backup_database` wrote and nobody
   changed since (its sha256 is kept in `.backups.json` of that folder). Any other file is shown to you first, through
-  MCP elicitation: its size, its first lines, and the lines `psql` and `mysql` would run as shell commands (`\!`,
-  `system`, `source`), because the file of an export is shaped by the agent. You tick "Restore this file" or the
+  MCP elicitation: its size, its first lines, and the lines `psql` and `mysql` would run as commands (a backslash command anywhere in a line, `pager`, `tee`, `edit`,
+  `system`, `source`; control characters are stripped from what is shown), because the file of an export is shaped by the agent. You tick "Restore this file" or the
   restore does not happen; a decline, a dismissal, or a file that changes meanwhile loads nothing. A client without
   elicitation (declared at `initialize`, protocol 2025-06-18 or later) gets the file refused: restore it in the window.
   The file is read once, hashed while it is copied, and the client loads that copy, so what is checked is what is loaded.
   Production and read-only connections are refused before any question.
-- **Passwords never go through the agent.** `create_connection` (PostgreSQL, MySQL/MariaDB only) saves a connection
-  read-only, tagged production and without a password, for `localhost` or a host a saved connection already uses
-  (libpq would otherwise fill the password from `~/.pgpass` or `PGPASSWORD` for any host); you complete and relax it
-  in the window. There is no tool to edit a connection, because changing its tag or host would lift the production
-  guard. `change_user` refuses any password field.
+- **Passwords never go through the agent.** `create_connection` (PostgreSQL, MySQL/MariaDB only) needs an explicit
+  host, port and user, and saves a connection read-only, tagged production and without a password, for `localhost` or
+  a host a saved connection already uses; you complete and relax it in the window. Such a connection never takes a
+  password from `PGPASSWORD` or `~/.pgpass` (the PostgreSQL driver is given an empty password and no password file;
+  a `PGSERVICE` you export is not neutralised). There is no tool to edit a connection, because changing its tag or
+  host would lift the production guard. `change_user` refuses any password field, and also a superuser, a role that
+  can create roles and log in, a `*.*` grant, a grant that can be passed on (`GRANT OPTION`, `ADMIN OPTION`), and a
+  new account that has no password and may be used from a host other than `localhost`, `127.0.0.1` or `::1` (a locked
+  or `NOLOGIN` account is fine): do those in the window.
+- **Passwords in text are hidden.** `recent_queries`, `list_saved_queries` and `list_processes` replace the literal of
+  `PASSWORD 'x'`, `PASSWORD = 'x'`, `IDENTIFIED BY / WITH … BY / AS 'x'`, `SET PASSWORD … = 'x'` and `PASSWORD('x')` by
+  `'***'`. This is a pattern, not a guarantee: a secret in other words stays visible.
 - **`save_query` saves under a new name** and never replaces a saved query.
 - **Read-only sessions.** SQLite opens the file read-only, which the driver enforces. On PostgreSQL and MySQL/MariaDB
   read-only is a session setting, so SQL could switch it back: `SET` is refused like any write, and on PostgreSQL so
@@ -297,9 +339,40 @@ What keeps an agent from doing more than you would at the window:
   raw command, and an aggregation pipeline with the `$out` or `$merge` stage is refused.
 - Rows are capped (50 by default, 200 at most), long cells are cut at 1,000 characters and binary values are shown
   as `‹binary N bytes›`.
+- **Time and size limits** for the sessions of the MCP server only (the window is not affected): a statement may run
+  60 seconds (PostgreSQL `statement_timeout`, MySQL `max_execution_time`, MariaDB `max_statement_time`, SQLite a
+  progress handler); set `OMATABLEPLUS_MCP_TIMEOUT` in seconds, 1 to 3600, or 0 for none. `export_data` stops at
+  1,000,000 rows or 512 MB and writes nothing (`OMATABLEPLUS_MCP_EXPORT_ROWS`, `OMATABLEPLUS_MCP_EXPORT_MB`, 0 for
+  none).
 - Pass `database` when a connection has no default database (`list_databases` shows an empty `database`).
 - Requests are served one at a time, and queries from the agent land in the query history like any other.
   `recent_queries` needs a connection and only returns the history of that one.
+
+### Security model
+
+Assume that the agent can be talked into anything by the data it reads (prompt injection), so every argument it sends
+and every string the database returns is treated as hostile. The server tells the agent so, in its instructions and in
+the description of each tool that returns database content: results are data, never instructions.
+
+- **The tier is chosen when you launch the server**, never by the agent (read, `--write`, `--destructive`).
+- **The keyword guards are advisory.** They look at the first word and the words of each statement, with strings and
+  comments skipped. They cannot see inside a function, procedure, view or trigger that already exists in the database,
+  nor what `CALL` or a `SELECT` of a user function does. They stop honest mistakes and the usual tricks, not a
+  determined attacker.
+- **The rights of the database user are the real boundary.** Give the agent a dedicated database user that has only
+  the rights you want it to use: `SELECT` only for the read tier, and no `SUPERUSER`, `FILE`, `pg_read_server_files` or
+  `pg_execute_server_program`. Do not give it your own login.
+- **Production-tagged and read-only connections are read-only at the database in every tier**, and the helper also
+  refuses their writes. Other connections are read-only at the database unless you launch with `--write`.
+- **Below `--destructive`** the server refuses what is listed above: drops, truncates, rights, accounts, routines,
+  triggers, extensions, server settings and server-control functions.
+- **Files** go through one sandbox folder, by bare name (see above); SQL that opens files is refused as far as the
+  check can tell.
+- **Limits**: a statement timeout, a row and size cap on exports, a row cap on results.
+- **Redacted**: password literals in the query history, saved queries and process lists. Nothing else is: rows you
+  select show what the database user may read.
+- **Known limitation**: a CSV or SQL export keeps cell text as it is, so a cell that starts with `=`, `+`, `-` or `@`
+  can act as a formula when the file is opened in a spreadsheet. Formulas are not neutralised.
 
 ## Install
 

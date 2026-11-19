@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "blackcode.omatableplus",
   "name": "OmaTablePlus",
-  "version": "2.0.2",
+  "version": "2.1.0",
   "author": "BlackCode",
   "license": "MIT",
   "description": "OmaTablePlus: a TablePlus-style database app for Omarchy, in its own window with a launcher entry. Browse, edit and query PostgreSQL, MySQL, MariaDB, SQLite, Redis, Valkey and MongoDB, directly or through SSH, with your OmaDBngin servers listed automatically",

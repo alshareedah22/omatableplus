@@ -23,9 +23,15 @@ HEAD_LINES = 6
 LINE_CUT = 100
 LINE_READ = 4096             # a longer physical line is read to its end, but only this much of it is kept
 COMMAND_LINES = 5
-# What the psql and mysql clients run as a shell command or a script when they meet it at the start of a line.
-# `\connect`, `\restrict`, `\N` (a NULL in COPY data) and a lone `\.` (end of COPY data) are in every pg_dump.
-RUNS_COMMANDS = re.compile(r"^\s*(?:\\(?!(?:connect|restrict|unrestrict)\b|N(?:\t|$)|\.\s*$)|system\s|source\s)", re.I)
+# What the psql and mysql clients run as a command or a script. At the start of a line: any backslash command and
+# the mysql words pager, tee, edit, system and source. psql also runs a backslash command in the middle of a line
+# (`SELECT 1 \! id`, `\gexec`, `\g |cmd`, `\copy ... program`), so a backslash followed by a letter, ! ? or | counts
+# anywhere. `\connect`, `\restrict`, `\unrestrict`, `\N` (a NULL in COPY data) and a lone `\.` (end of COPY data) are
+# in every pg_dump. A line of COPY data with `\n` in it is flagged too: better a false alarm than a missed command.
+_ALLOWED = r"(?:connect|restrict|unrestrict)\b|N(?:\t|$)"
+RUNS_COMMANDS = re.compile(r"^\s*(?:\\(?!" + _ALLOWED + r"|\.\s*$)|(?:pager|tee|edit|system|source)(?:\s|$))", re.I)
+MID_LINE = re.compile(r"\\(?!" + _ALLOWED + r")[A-Za-z!?|]")
+CONTROL = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")      # C0 controls except tab, and DEL: they can hide or rewrite a line
 
 
 def digest(path):
@@ -37,33 +43,41 @@ def digest(path):
 
 
 def physical_lines(path):
-    """The first LINE_READ bytes of each physical line.
+    """(the first LINE_READ bytes of each physical line, whether a command stands further along that line).
 
     A longer line is read to its end in chunks and counted once, so what follows the first chunk is never taken
-    for the start of a line. What is kept of it is always longer than LINE_CUT, so `shown` marks it as cut.
+    for the start of a line, but it is still searched for a command in the middle of one. What is kept of it is
+    always longer than LINE_CUT, so `shown` marks it as cut.
     """
     with open(path, "rb") as f:
         for raw in iter(lambda: f.readline(LINE_READ), b""):
-            last = raw
+            last, beyond = raw, False
             while not last.endswith(b"\n") and last:
+                before = last[-1:]
                 last = f.readline(LINE_READ)
-            yield raw.decode("utf-8", "replace").rstrip("\r\n")
+                beyond = beyond or bool(MID_LINE.search((before + last).decode("utf-8", "replace")))
+            yield raw.decode("utf-8", "replace").rstrip("\r\n"), beyond
+
+
+def runs_commands(line, beyond=False):
+    return beyond or bool(RUNS_COMMANDS.match(line) or MID_LINE.search(line))
 
 
 def shown(line):
+    line = CONTROL.sub("", line)
     return line[:LINE_CUT] + "..." if len(line) > LINE_CUT else line
 
 
 def glance(path):
     """What a person needs to decide on a file: its size, its first lines, and the lines a client would run."""
     head, commands, lines, more = [], [], 0, 0
-    for line in physical_lines(path):
+    for line, beyond in physical_lines(path):
         lines += 1
         if lines <= HEAD_LINES:
             head.append(shown(line))
-        if RUNS_COMMANDS.match(line) and len(commands) < COMMAND_LINES:
+        if runs_commands(line, beyond) and len(commands) < COMMAND_LINES:
             commands.append(shown(line))
-        elif RUNS_COMMANDS.match(line):
+        elif runs_commands(line, beyond):
             more += 1
     text = [f"{os.path.basename(path)}: {os.path.getsize(path)} bytes, {lines} lines", "First lines:"]
     text += [f"  {line}" for line in head]
