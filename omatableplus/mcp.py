@@ -8,17 +8,24 @@ Rules that keep a model from doing more than a person at the window could:
   * the helper's `confirmed` flag is never an argument: a production write is refused, not confirmed;
   * three tiers chosen at launch, never by the model: read (default), --write, --destructive (implies --write);
   * without --write every SQL session is opened read-only, which the database driver enforces;
-  * SQL that drops, truncates or changes rights needs --destructive, and SQL that reaches files is always refused.
+  * Redis and MongoDB are read only, and files only live in one folder (see mcpfiles).
 
 Requests are served one at a time.
 """
 
 import argparse
+import collections
 import json
+import os
 import signal
 import sys
 
 from . import __version__
+from .mcp_admin import TOOLS as ADMIN_TOOLS
+from .mcp_admin import AdminTools
+from .mcp_nosql import TOOLS as NOSQL_TOOLS
+from .mcp_nosql import NosqlTools
+from .mcpfiles import Sandbox
 from .mcpschema import (CELL_LIMIT, CHANGES, CONNECTION, DATABASE, DEFAULT_ROWS, DESTRUCTIVE, FAMILIES, FILTERS,
                         HISTORY_LIMIT, MATCH_LIMIT, READ, ROWS, SCHEMA, SORT, SQL, SQL_ENGINES, TABLE, WRITE,
                         check, page_size, schema_of, shrink, shrink_rows)
@@ -27,6 +34,8 @@ from .protocol import Error, encode
 
 SUPPORTED = ("2024-11-05", "2025-03-26", "2025-06-18")
 LATEST = SUPPORTED[-1]
+ELICITATION_SINCE = "2025-06-18"
+DEFAULT_FILES = os.path.join(os.path.expanduser("~"), "Downloads", "omatableplus-mcp")
 
 HINTS = {
     "confirm": ("This connection is tagged production and MCP cannot confirm a write. Run the change in the "
@@ -34,25 +43,27 @@ HINTS = {
     "destructive": "Start the MCP server with --destructive to allow dropping, truncating and changing rights.",
 }
 READ_ONLY_HINT = "The MCP server was started without --write, so every session is read-only."
-ENGINES_SAID = "SQL (PostgreSQL, MySQL/MariaDB, SQLite)"
+ENGINES_SAID = "SQL (PostgreSQL, MySQL/MariaDB, SQLite), plus Redis and MongoDB for reading"
 INSTRUCTIONS = {
     READ: (f"OmaTablePlus databases: {ENGINES_SAID}. This server is read-only: SQL sessions are opened read-only and "
            "writes are refused. Start with list_connections, then list_objects, describe_object or "
-           "search_schema, then search_rows or execute_sql."),
+           "search_schema, then search_rows or execute_sql; redis_* and mongo_* tools read Redis and MongoDB."),
     WRITE: (f"OmaTablePlus databases: {ENGINES_SAID}. This server is in write mode: SQL writes run on connections "
             "that are neither read-only nor tagged production; production writes are refused. Start with "
             "list_connections. To edit rows prefer preview_changes then commit_changes (parameterised, by primary "
-            "key, all or nothing) over hand-written SQL. Dropping, truncating and rights changes are not enabled."),
+            "key, all or nothing) over hand-written SQL. Dropping, truncating and rights changes are not enabled. "
+            "Import, export, backup and restore only use files of the MCP files folder (list_files)."),
     DESTRUCTIVE: (f"OmaTablePlus databases: {ENGINES_SAID}. This server is in destructive mode: besides writing, it "
-                  "may drop, truncate and change rights through SQL, on connections that are neither "
+                  "may drop, truncate, restore, stop processes and change users, on connections that are neither "
                   "read-only nor tagged production; production is still refused. Preview before you change: "
-                  "preview_changes."),
+                  "preview_changes, preview_alter_table, preview_user_change. Import, export, backup and restore "
+                  "only use files of the MCP files folder (list_files)."),
 }
 
 # name, description, properties, required, tier
 SQL_TOOLS = (
     ("list_connections", "List the saved connections and OmaDBngin servers (id, name, engine, family, tag, "
-     "read-only). family says which tools fit: sql.", {}, (), READ),
+     "read-only). family says which tools fit: sql, redis (redis_*) or mongodb (mongo_*).", {}, (), READ),
     ("list_databases", "List the databases of a connection and the current one.",
      {"connection": CONNECTION}, ("connection",), READ),
     ("list_objects", "List tables and views per schema.",
@@ -74,7 +85,7 @@ SQL_TOOLS = (
      ("connection", "schema", "table"), READ),
     ("execute_sql", "Run SQL. Rows are capped and long cells shortened; `truncated` says when rows were cut. "
      "Writes only run in write mode, on connections that are not read-only or production. SQL that opens or "
-     "creates files (ATTACH, VACUUM INTO, COPY, INTO OUTFILE) is refused.",
+     "creates files (ATTACH, VACUUM INTO, COPY, INTO OUTFILE) is refused: export_data and backup_database do that.",
      {"connection": CONNECTION, "database": DATABASE, "sql": SQL, "max_rows": ROWS}, ("connection", "sql"), READ),
     ("explain_sql", "Show the execution plan of one statement; analyze=true runs it (reads only).",
      {"connection": CONNECTION, "database": DATABASE, "sql": SQL,
@@ -95,7 +106,7 @@ SQL_TOOLS = (
      ("connection", "schema", "table"), WRITE),
 )
 
-TOOLS = SQL_TOOLS
+TOOLS = SQL_TOOLS + ADMIN_TOOLS + NOSQL_TOOLS
 
 
 def failure(error, write):
@@ -116,15 +127,20 @@ class RpcError(Exception):
         self.message = message
 
 
-class McpServer:
-    def __init__(self, helper, write=False, destructive=False, out=None):
+class McpServer(AdminTools, NosqlTools):
+    def __init__(self, helper, write=False, destructive=False, files=None, out=None):
         self.helper = helper
         self.methods = helper.methods
         self.destructive = destructive
         self.write = write or destructive
+        self.files = Sandbox(files or DEFAULT_FILES)
         self.out = out or sys.stdout
         self.open = {}      # (connection id, read-only) -> helper session id
         self.home = {}      # helper session id -> the database it opened on
+        self.inbox = iter(())       # the client's messages; serve() points it at stdin
+        self.waiting = collections.deque()      # lines that arrived while a question to the person was open
+        self.elicits = False        # did the client say it can put a question to a person?
+        self.questions = 0
         enabled = {READ} | ({WRITE} if self.write else set()) | ({DESTRUCTIVE} if destructive else set())
         self.tools = {name: {"description": description, "inputSchema": schema_of(properties, required)}
                       for name, description, properties, required, tier in TOOLS if tier in enabled}
@@ -169,12 +185,35 @@ class McpServer:
             self.send({"id": rid, "result": result})
 
     def serve(self, inp=None):
+        self.inbox = iter(inp or sys.stdin)
         try:
-            for line in inp or sys.stdin:
+            while True:
+                line = self.waiting.popleft() if self.waiting else next(self.inbox, None)
+                if line is None:
+                    break
                 if line.strip():
                     self.handle(line)
         finally:
             self.close()
+
+    def ask_person(self, message, schema):
+        """Put a question to the person at the client (MCP elicitation) and wait for the answer: the result of
+        the reply, or a cancel when the client answers with an error or closes its input. Other messages that
+        arrive meanwhile wait their turn."""
+        self.questions += 1
+        rid = f"omatableplus-{self.questions}"
+        self.send({"id": rid, "method": "elicitation/create", "params": {"message": message, "requestedSchema": schema}})
+        for line in self.inbox:
+            try:
+                reply = json.loads(line)
+            except ValueError:
+                reply = None
+            if not isinstance(reply, dict) or reply.get("id") != rid or "method" in reply:
+                self.waiting.append(line)
+                continue
+            result = reply.get("result")
+            return result if isinstance(result, dict) else {"action": "cancel"}
+        return {"action": "cancel"}
 
     def close(self):
         self.open.clear()
@@ -183,7 +222,11 @@ class McpServer:
 
     def initialize(self, params):
         wanted = params.get("protocolVersion")
-        return {"protocolVersion": wanted if wanted in SUPPORTED else LATEST, "capabilities": {"tools": {}},
+        version = wanted if wanted in SUPPORTED else LATEST
+        capabilities = params.get("capabilities")
+        self.elicits = version >= ELICITATION_SINCE and isinstance(capabilities, dict) \
+            and isinstance(capabilities.get("elicitation"), dict)
+        return {"protocolVersion": version, "capabilities": {"tools": {}},
                 "serverInfo": {"name": "omatableplus", "version": __version__}, "instructions": INSTRUCTIONS[self.tier()]}
 
     def tier(self):
@@ -211,7 +254,7 @@ class McpServer:
         return {"content": [{"type": "text", "text": text}], "isError": failed}
 
     # connections and sessions -----------------------------------------------
-    def connection(self, ref):
+    def connection(self, ref, engines=SQL_ENGINES):
         saved = self.helper.sessions.store.list()
         found = self.matching(saved, ref)
         if not found:
@@ -220,9 +263,18 @@ class McpServer:
             raise Error("notfound", f"no connection {ref!r}; call list_connections")
         if len(found) > 1:
             raise Error("invalid", f"{len(found)} connections are named {ref!r}; use the id")
-        if found[0].get("engine") not in SQL_ENGINES:
+        if found[0].get("engine") not in engines:
             raise Error("unsupported", f"{found[0].get('engine')} connections do not fit this tool "
-                                       f"(it works with {', '.join(SQL_ENGINES)}); list_connections gives each family")
+                                       f"(it works with {', '.join(engines)}); list_connections gives each family")
+        return found[0]
+
+    def saved_connection(self, ref):
+        """A connection of the OmaTablePlus config; OmaDBngin servers are not ours to copy or delete."""
+        found = self.matching(self.helper.sessions.store.list(), ref)
+        if not found:
+            raise Error("notfound", f"no saved connection {ref!r}; call list_connections")
+        if len(found) > 1:
+            raise Error("invalid", f"{len(found)} connections are named {ref!r}; use the id")
         return found[0]
 
     @staticmethod
@@ -230,9 +282,10 @@ class McpServer:
         by_id = [c for c in connections if c["id"] == ref]
         return by_id or [c for c in connections if str(c.get("name", "")).lower() == ref.lower()]
 
-    def session(self, ref, database=None):
-        readonly = not self.write
-        conn = self.connection(ref)
+    def session(self, ref, database=None, engines=SQL_ENGINES, readonly=None):
+        """readonly=True asks for a session the driver keeps read-only whatever the mode (exports, NoSQL)."""
+        readonly = not self.write if readonly is None else readonly
+        conn = self.connection(ref, engines)
         key = (conn["id"], readonly)
         sid = self.open.get(key)
         if sid in self.helper.sessions.items and \
@@ -262,6 +315,12 @@ class McpServer:
             self.helper.sessions.close(sid)
         self.open.clear()
         self.home.clear()
+
+    def drop_sessions_of(self, conn_id):
+        for key in [key for key in self.open if key[0] == conn_id]:
+            sid = self.open.pop(key)
+            self.home.pop(sid, None)
+            self.helper.sessions.close(sid)
 
     # tools ------------------------------------------------------------------
     def tool_list_connections(self):
@@ -362,12 +421,15 @@ def main(argv=None):
     parser.add_argument("--write", action="store_true",
                         help="allow writes on connections that are neither read-only nor tagged production")
     parser.add_argument("--destructive", action="store_true",
-                        help="also allow SQL that drops, truncates or changes rights (implies --write)")
+                        help="also allow drop, truncate, restore, killing processes and user changes (implies --write)")
+    parser.add_argument("--files-dir", default=DEFAULT_FILES,
+                        help="the only folder import, export, backup and restore use (default: %(default)s)")
     options = parser.parse_args(argv)
     sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     out, sys.stdout = sys.stdout, sys.stderr    # a stray print must never reach the client
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    McpServer(build(Store()), write=options.write, destructive=options.destructive, out=out).serve()
+    McpServer(build(Store()), write=options.write, destructive=options.destructive, files=options.files_dir,
+              out=out).serve()
 
 
 if __name__ == "__main__":

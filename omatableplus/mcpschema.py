@@ -6,7 +6,11 @@ from .protocol import Error
 
 READ, WRITE, DESTRUCTIVE = "read", "write", "destructive"     # a tool's tier, see McpServer
 SQL_ENGINES = ("postgresql", "mysql", "mariadb", "sqlite")
-FAMILIES = dict.fromkeys(SQL_ENGINES, "sql")
+SERVER_ENGINES = ("postgresql", "mysql", "mariadb")
+REDIS_ENGINES = ("redis", "valkey")
+MONGO_ENGINES = ("mongodb",)
+FAMILIES = {**dict.fromkeys(SQL_ENGINES, "sql"), **dict.fromkeys(REDIS_ENGINES, "redis"),
+            **dict.fromkeys(MONGO_ENGINES, "mongodb")}
 
 DEFAULT_ROWS = 50
 MAX_ROWS = 200
@@ -21,6 +25,7 @@ SCHEMA = {"type": "string", "description": "Schema name (SQLite: main, PostgreSQ
 TABLE = {"type": "string", "description": "Table name."}
 SQL = {"type": "string", "description": "SQL text. Several statements run in order and stop at the first error."}
 ROWS = {"type": "integer", "description": f"Rows to return (default {DEFAULT_ROWS}, at most {MAX_ROWS})."}
+FILE = {"type": "string", "description": "A bare file name in the MCP files folder (see list_files); no folder, no path."}
 FILTERS = {
     "type": "array",
     "description": "Conditions on columns. Ops: = <> < > <= >=, contains, not_contains, starts, ends, in "
@@ -98,6 +103,16 @@ def shrink(value):
 
 def shrink_rows(rows):
     return [[shrink(cell) for cell in row] for row in rows]
+
+
+def trim(value):
+    """`shrink` for a payload of any shape: long text cut, bytes hidden, long lists cut with a marker."""
+    if isinstance(value, dict):
+        return {key: trim(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        kept = [trim(item) for item in value[:MAX_ROWS]]
+        return kept + [f"…[+{len(value) - MAX_ROWS} items]"] if len(value) > MAX_ROWS else kept
+    return shrink(value)
 
 
 def page_size(limit):
