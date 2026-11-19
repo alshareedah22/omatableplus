@@ -28,5 +28,17 @@ class BarSetup(unittest.TestCase):
             self.assertIn("setup) setup ;;", f.read())
 
 
+
+class VersionAgrees(unittest.TestCase):
+    def test_helper_version_matches_the_manifest(self):
+        """app.version reported 2.0.0 in the 2.0.1 release: the two must not drift apart."""
+        import json
+        import sys
+        sys.path.insert(0, ROOT)
+        from omatableplus import __version__
+        with open(os.path.join(ROOT, "manifest.json")) as f:
+            self.assertEqual(__version__, json.load(f)["version"])
+
+
 if __name__ == "__main__":
     unittest.main()

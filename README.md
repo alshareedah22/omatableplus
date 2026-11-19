@@ -8,6 +8,10 @@ Redis/Valkey and a document browser for MongoDB.
 
 **Compatibility:** works with Omarchy 4.5 (checked on 4.5.0-3: manifest validation, the plugin's own tests, and every Omarchy component, command and bar interface it uses).
 
+## What's new in 2.0.2
+
+- The helper now reports its real version (it said 2.0.0 in 2.0.1); a test keeps it in step with the manifest.
+
 ## What's new in 2.0.1
 
 - **First-run setup now runs.** In 2.0.0 the bar icon started `true` instead of
