@@ -287,6 +287,7 @@ FocusScope {
 
     Ui.TextField {
       id: editor
+      readOnly: !activeFocus   // an unfocused field reads no clipboard
       parent: list.contentItem
       property int row: -1
       property int vi: -1

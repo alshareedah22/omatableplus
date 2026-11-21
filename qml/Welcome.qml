@@ -15,6 +15,7 @@ Item {
   property string search: ""
   property string selectedId: ""
   property string toast: ""
+  property bool formOpen: false
 
   signal connectRequested(var conn)
 
@@ -67,8 +68,8 @@ Item {
 
   function select(c) {
     selectedId = c ? c.id : ""
-    form.visible = true
-    form.load(c)
+    formOpen = true
+    form.item.load(c)
   }
 
   function subtitle(c) {
@@ -102,6 +103,7 @@ Item {
           Layout.fillWidth: true
           Ui.TextField {
             id: searchField
+            readOnly: !activeFocus   // an unfocused field reads no clipboard
             Layout.fillWidth: true
             placeholderText: "Search connections"
             font.family: Style.font.family
@@ -239,7 +241,7 @@ Item {
 
       Column {
         anchors.centerIn: parent
-        visible: !form.visible
+        visible: !welcome.formOpen
         spacing: 8
         Image {
           anchors.horizontalCenter: parent.horizontalCenter
@@ -253,17 +255,20 @@ Item {
           color: Commons.Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.body }
       }
 
-      ConnectionForm {
+      // Destroyed while closed: a hidden form would keep its text inputs alive.
+      Loader {
         id: form
         anchors.fill: parent
-        visible: false
-        helper: welcome.helper
-        keyring: welcome.keyring
-        onSaved: function(c) { welcome.reload(); welcome.select(c); welcome.toast = "Saved " + c.name }
-        onCancelled: { visible = false; welcome.selectedId = "" }
-        onDeleted: function(id) { visible = false; welcome.selectedId = ""; welcome.reload() }
-        onDuplicated: function(c) { welcome.reload(); welcome.select(c) }
-        onConnectRequested: function(c) { welcome.connectRequested(c) }
+        active: welcome.formOpen
+        sourceComponent: ConnectionForm {
+          helper: welcome.helper
+          keyring: welcome.keyring
+          onSaved: function(c) { welcome.reload(); welcome.select(c); welcome.toast = "Saved " + c.name }
+          onCancelled: { welcome.formOpen = false; welcome.selectedId = "" }
+          onDeleted: function(id) { welcome.formOpen = false; welcome.selectedId = ""; welcome.reload() }
+          onDuplicated: function(c) { welcome.reload(); welcome.select(c) }
+          onConnectRequested: function(c) { welcome.connectRequested(c) }
+        }
       }
     }
   }

@@ -99,6 +99,7 @@ Popup {
       Layout.fillHeight: true
       TextArea {
         id: area
+        readOnly: !activeFocus   // an unfocused field reads no clipboard
         selectByMouse: true
         wrapMode: TextEdit.Wrap
         color: Commons.Color.foreground

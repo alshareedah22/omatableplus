@@ -343,6 +343,7 @@ Item {
               Layout.fillWidth: true
               spacing: 4
               Ui.TextField {
+                readOnly: !activeFocus   // an unfocused field reads no clipboard
                 Layout.fillWidth: true
                 placeholderText: "Search collections"
                 font.family: Style.font.family
@@ -458,6 +459,7 @@ Item {
                   Ui.Button { bordered: mb.mode === "aggregate"; text: "Aggregate"; onClicked: { mb.mode = "aggregate"; if (pipeArea.text.trim() === "") pipeArea.text = "[\n  {$match: {}}\n]"; pipeArea.forceActiveFocus() } }
                   Ui.TextField {
                     id: filterField
+                    readOnly: !activeFocus   // an unfocused field reads no clipboard
                     visible: mb.mode === "find"
                     Layout.fillWidth: true
                     Layout.preferredWidth: 320
@@ -469,6 +471,7 @@ Item {
                   }
                   Ui.TextField {
                     id: sortField
+                    readOnly: !activeFocus   // an unfocused field reads no clipboard
                     visible: mb.mode === "find"
                     Layout.fillWidth: true
                     Layout.preferredWidth: 130
@@ -482,6 +485,7 @@ Item {
                   }
                   Ui.TextField {
                     id: projField
+                    readOnly: !activeFocus   // an unfocused field reads no clipboard
                     visible: mb.mode === "find"
                     Layout.fillWidth: true
                     Layout.preferredWidth: 130
@@ -501,6 +505,7 @@ Item {
                   visible: mb.mode === "aggregate"
                   TextArea {
                     id: pipeArea
+                    readOnly: !activeFocus   // an unfocused field reads no clipboard
                     placeholderText: "[{$match: {...}}, {$group: {...}}]"
                     selectByMouse: true
                     wrapMode: TextEdit.Wrap
@@ -638,8 +643,8 @@ Item {
               RowLayout {
                 Layout.fillWidth: true
                 spacing: 6
-                Ui.TextField { id: ixKeys; Layout.fillWidth: true; placeholderText: "Keys, e.g. {email: 1} or {name: 1, age: -1}"; font.family: "monospace"; Keys.onReturnPressed: mb.createIndex() }
-                Ui.TextField { id: ixName; Layout.preferredWidth: 160; placeholderText: "Name (optional)"; font.family: Style.font.family }
+                Ui.TextField { readOnly: !activeFocus; id: ixKeys; Layout.fillWidth: true; placeholderText: "Keys, e.g. {email: 1} or {name: 1, age: -1}"; font.family: "monospace"; Keys.onReturnPressed: mb.createIndex() }
+                Ui.TextField { readOnly: !activeFocus; id: ixName; Layout.preferredWidth: 160; placeholderText: "Name (optional)"; font.family: Style.font.family }
                 Ui.Button { bordered: mb.uniqueIndex; text: mb.uniqueIndex ? "Unique" : "Not unique"; onClicked: mb.uniqueIndex = !mb.uniqueIndex }
                 Ui.Button { bordered: true; foreground: Commons.Color.accent; text: "Create index"; enabled: ixKeys.text.trim() !== ""; onClicked: mb.createIndex() }
               }

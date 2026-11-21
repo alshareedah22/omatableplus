@@ -9,6 +9,7 @@ The venv is rebuilt when the system Python's minor version or the lock
 changes; a failed install leaves nothing behind.
 """
 
+import fcntl
 import hashlib
 import json
 import os
@@ -45,16 +46,35 @@ def fatal(message):
     sys.exit(1)
 
 
+def current(python, want):
+    try:
+        with open(os.path.join(VENV, ".omatableplus-stamp")) as f:
+            return f.read().strip() == want and os.path.exists(python)
+    except OSError:
+        return False
+
+
 def ensure_venv():
     python = os.path.join(VENV, "bin", "python")
     want = stamp()
-    try:
-        with open(os.path.join(VENV, ".omatableplus-stamp")) as f:
-            if f.read().strip() == want and os.path.exists(python):
-                return python
-    except OSError:
-        pass
+    if current(python, want):
+        return python
     os.makedirs(DATA, mode=0o700, exist_ok=True)
+    # The bar's automatic setup and a window's helper can both get here at once. They share the
+    # build and backup paths, so the whole build-and-swap runs under one lock; the one that waits
+    # finds the drivers ready and returns.
+    lock = os.open(os.path.join(DATA, "venv.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if current(python, want):
+            return python
+        build(want)
+        return python
+    finally:
+        os.close(lock)    # releases the lock
+
+
+def build(want):
     tmp = VENV + ".new"
     shutil.rmtree(tmp, ignore_errors=True)
     emit({"event": "progress", "text": "Preparing database drivers…", "pct": 10})
@@ -75,18 +95,36 @@ def ensure_venv():
         shutil.rmtree(tmp, ignore_errors=True)
         lines = [l for l in (r.stderr or r.stdout).splitlines() if l.strip()]
         fatal("installing drivers failed: " + " ".join(lines[-3:]))
-    with open(os.path.join(tmp, ".omatableplus-stamp"), "w") as f:
-        f.write(want + "\n")
+    try:
+        with open(os.path.join(tmp, ".omatableplus-stamp"), "w") as f:
+            f.write(want + "\n")
+    except OSError as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        fatal(f"could not finish {tmp}: {e}")
+    swap(tmp)
+    emit({"event": "progress", "text": "Drivers ready", "pct": 100})
+
+
+def swap(tmp):
+    """Put the finished build at VENV. The previous install is kept until the new one is in place,
+    and put back if it cannot be."""
     old = VENV + ".old"
     shutil.rmtree(old, ignore_errors=True)
-    had_old = os.path.exists(VENV)
-    if had_old:
-        os.rename(VENV, old)
-    os.rename(tmp, VENV)
+    had_old = os.path.lexists(VENV)
+    try:
+        if had_old:
+            os.rename(VENV, old)
+        os.rename(tmp, VENV)
+    except OSError as e:
+        if had_old and os.path.lexists(old) and not os.path.lexists(VENV):
+            try:
+                os.rename(old, VENV)
+            except OSError:
+                pass
+        shutil.rmtree(tmp, ignore_errors=True)
+        fatal(f"could not install the new drivers: {e}")
     if had_old:
         shutil.rmtree(old, ignore_errors=True)
-    emit({"event": "progress", "text": "Drivers ready", "pct": 100})
-    return python
 
 
 def migrate():

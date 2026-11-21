@@ -313,6 +313,7 @@ Item {
 
         Ui.TextField {
           id: historySearch
+          readOnly: !activeFocus   // an unfocused field reads no clipboard
           Layout.fillWidth: true
           visible: q.drawerPage === "history"
           placeholderText: "Search history"
@@ -457,6 +458,7 @@ Item {
       Text { textFormat: Text.PlainText; text: q.savedId ? "Save query" : "Save query as"; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
       Ui.TextField {
         id: nameField
+        readOnly: !activeFocus   // an unfocused field reads no clipboard
         Layout.fillWidth: true
         placeholderText: "Name"
         font.family: Style.font.family

@@ -8,6 +8,18 @@ Redis/Valkey and a document browser for MongoDB.
 
 **Compatibility:** works with Omarchy 4.5 (checked on 4.5.0-3: manifest validation, the plugin's own tests, and every Omarchy component, command and bar interface it uses).
 
+## What's new in 2.1.1
+
+- **Hidden text fields no longer read the clipboard.** Qt's text inputs look at the clipboard whenever it changes,
+  and what they read comes from whichever app owns it, so a slow or huge copy could stall the window even with no
+  paste. The connection form is now destroyed while closed, and every text field is read-only until it has focus.
+  Ctrl+V in the connection form's fields reads the clipboard through `wl-paste` with a 2 s and 64 KB limit.
+- **First-run setup and the helper no longer collide.** The bar's automatic setup and a window's helper could build the
+  database drivers at the same time and delete each other's work. The whole build-and-swap now runs under a lock, and
+  the previous drivers are kept if the new ones cannot be put in place.
+- **A symlinked `bindings.lua` is left alone.** Setup and uninstall no longer replace a link (dotfiles, Stow) with a
+  detached copy; they tell you the shortcut line to add or remove yourself. A regular file keeps its permissions.
+
 ## What's new in 2.1.0
 
 - **Color picker** in the connection form (by vgrbr).

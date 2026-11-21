@@ -68,6 +68,7 @@ Rectangle {
       spacing: 4
       Ui.TextField {
         id: search
+        readOnly: !activeFocus   // an unfocused field reads no clipboard
         Layout.fillWidth: true
         placeholderText: "Search tables"
         font.family: Style.font.family

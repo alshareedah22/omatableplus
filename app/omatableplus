@@ -84,11 +84,15 @@ EOF
 
 bind_key() {
   [[ -f $BINDINGS ]] || { echo "no $BINDINGS: no shortcut added"; return 0; }
+  # A symlink means something else manages this file (dotfiles, Stow, Omarchy): replacing it
+  # would leave a detached copy, so it is left alone.
+  [[ -L $BINDINGS ]] && { echo "$BINDINGS is a symlink: no shortcut added; add $BIND yourself"; return 0; }
   grep -qxF "$BIND" "$BINDINGS" && return 0
   if grep -qF "\"$KEYS\"" "$BINDINGS"; then echo "$KEYS is taken: no shortcut added"; return 0; fi
   local text
   text=$(<"$BINDINGS")
-  { [[ -z $text ]] || printf '%s\n' "$text"; printf '%s\n%s\n' "$MARK" "$BIND"; } >"$BINDINGS.tmp-$$" && mv "$BINDINGS.tmp-$$" "$BINDINGS"
+  { [[ -z $text ]] || printf '%s\n' "$text"; printf '%s\n%s\n' "$MARK" "$BIND"; } >"$BINDINGS.tmp-$$" \
+    && chmod --reference="$BINDINGS" "$BINDINGS.tmp-$$" && mv "$BINDINGS.tmp-$$" "$BINDINGS"
   hyprctl reload >/dev/null 2>&1 || true
   echo "SUPER+ALT+T opens OmaTablePlus"
 }
@@ -111,8 +115,11 @@ setup() {
 }
 
 uninstall() {
-  if [[ -f $BINDINGS ]] && grep -qxF "$BIND" "$BINDINGS"; then
+  if [[ -L $BINDINGS ]]; then
+    echo "$BINDINGS is a symlink: left alone; remove the OmaTablePlus lines yourself if you added them"
+  elif [[ -f $BINDINGS ]] && grep -qxF "$BIND" "$BINDINGS"; then
     grep -vxF -e "$MARK" -e "$BIND" "$BINDINGS" >"$BINDINGS.tmp-$$" || true
+    chmod --reference="$BINDINGS" "$BINDINGS.tmp-$$"
     mv "$BINDINGS.tmp-$$" "$BINDINGS"
     hyprctl reload >/dev/null 2>&1 || true
   fi

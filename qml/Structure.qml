@@ -207,6 +207,7 @@ Item {
   Confirm { id: confirm }
 
   component Cell: Ui.TextField {
+    readOnly: !activeFocus   // an unfocused field reads no clipboard
     font.family: "monospace"
     font.pixelSize: Style.font.bodySmall
     verticalPadding: 2

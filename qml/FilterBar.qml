@@ -93,6 +93,7 @@ Rectangle {
         }
         Ui.TextField {
           id: valueField
+          readOnly: !activeFocus   // an unfocused field reads no clipboard
           Layout.fillWidth: true
           visible: frow.op !== "null" && frow.op !== "not_null"
           text: frow.value

@@ -118,6 +118,7 @@ Rectangle {
       spacing: 6
       Ui.TextField {
         id: line
+        readOnly: !activeFocus   // an unfocused field reads no clipboard
         visible: !con.multiline
         Layout.fillWidth: true
         placeholderText: con.placeholder
@@ -133,6 +134,7 @@ Rectangle {
         Layout.preferredHeight: Math.round(Style.font.body * 4.5)
         TextArea {
           id: area
+          readOnly: !activeFocus   // an unfocused field reads no clipboard
           placeholderText: con.placeholder
           color: Commons.Color.foreground
           placeholderTextColor: Commons.Color.muted

@@ -182,6 +182,7 @@ Popup {
         }
         Ui.TextField {
           id: nameCell
+          readOnly: !activeFocus   // an unfocused field reads no clipboard
           Layout.preferredWidth: colList.wName
           font.family: "monospace"
           font.pixelSize: Style.font.bodySmall
@@ -191,6 +192,7 @@ Popup {
         }
         Ui.TextField {
           id: typeCell
+          readOnly: !activeFocus   // an unfocused field reads no clipboard
           Layout.preferredWidth: colList.wType - typeBtn.width - 2
           font.family: "monospace"
           font.pixelSize: Style.font.bodySmall
@@ -220,6 +222,7 @@ Popup {
           onClicked: dlg.set(colRow.index, "nullable", !colRow.col.nullable)
         }
         Ui.TextField {
+          readOnly: !activeFocus   // an unfocused field reads no clipboard
           Layout.fillWidth: true
           font.family: "monospace"
           font.pixelSize: Style.font.bodySmall

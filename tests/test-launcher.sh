@@ -48,7 +48,27 @@ eq "removes the shortcut" "$(cat "$HOME/.config/hypr/bindings.lua")" "-- mine"
 [[ ! -e $R ]] && ok "removes the runtime folder" || bad "removes the runtime folder"
 has "a reinstall sets up again" "$("$L" setup)" "app launcher"
 
+echo "Managed (symlinked) and private bindings"
+rm -rf "$XDG_STATE_HOME"; mkdir -p "$T/dotfiles"
+printf -- '-- managed\n' >"$T/dotfiles/bindings.lua"; rm -f "$HOME/.config/hypr/bindings.lua"
+ln -s "$T/dotfiles/bindings.lua" "$HOME/.config/hypr/bindings.lua"
+has "says a symlinked file is left alone" "$("$L" setup)" "symlink"
+[[ -L $HOME/.config/hypr/bindings.lua ]] && ok "keeps the symlink" || bad "keeps the symlink"
+eq "does not touch the managed file" "$(cat "$T/dotfiles/bindings.lua")" "-- managed"
+printf -- '-- managed\n%s\n%s\n' "-- OmaTablePlus (omatableplus uninstall removes these two lines)" "o.bind(\"SUPER + ALT + T\", \"OmaTablePlus\", \"$here/app/omatableplus\")" >"$T/dotfiles/bindings.lua"
+before=$(cat "$T/dotfiles/bindings.lua")
+"$L" uninstall >/dev/null
+[[ -L $HOME/.config/hypr/bindings.lua ]] && ok "uninstall keeps the symlink" || bad "uninstall keeps the symlink"
+eq "uninstall leaves the managed file" "$(cat "$T/dotfiles/bindings.lua")" "$before"
+rm -f "$HOME/.config/hypr/bindings.lua" ; rm -rf "$XDG_STATE_HOME"
+printf -- '-- mine\n' >"$HOME/.config/hypr/bindings.lua"; chmod 600 "$HOME/.config/hypr/bindings.lua"
+"$L" setup >/dev/null
+eq "setup keeps the file's mode" "$(stat -c %a "$HOME/.config/hypr/bindings.lua")" "600"
+"$L" uninstall >/dev/null
+eq "uninstall keeps the file's mode" "$(stat -c %a "$HOME/.config/hypr/bindings.lua")" "600"
+
 echo "Moved plugin or Omarchy"
+rm -rf "$XDG_STATE_HOME"; "$L" setup >/dev/null
 echo "old|place" >"$R/.source"
 "$L" help >/dev/null
 OMARCHY_PATH=/usr/share/omarchy bash -c "source <(sed -n '/^runtime()/,/^}/p' '$L'); ROOT='$here'; OMARCHY_SHELL=/usr/share/omarchy/shell; RUNTIME='$R'; fail(){ exit 1; }; runtime"

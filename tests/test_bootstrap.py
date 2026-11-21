@@ -88,6 +88,81 @@ def load_tablectl():
     return mod
 
 
+class VenvBuildTest(unittest.TestCase):
+    """The bar's setup and a window's helper can start together; they must not trample each other."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.mod = load_tablectl()
+        self.mod.DATA = os.path.join(self.tmp, "data")
+        self.mod.VENV = os.path.join(self.mod.DATA, "venv")
+        self.mod.emit = lambda obj: None
+
+    def test_concurrent_callers_build_once_and_never_overlap(self):
+        import threading
+        import time
+        mod = self.mod
+        active, builds, overlaps = [0], [0], []
+
+        def fake_build(want):
+            active[0] += 1
+            if active[0] > 1:
+                overlaps.append(1)
+            builds[0] += 1
+            time.sleep(0.2)
+            os.makedirs(os.path.join(mod.VENV, "bin"))
+            open(os.path.join(mod.VENV, "bin", "python"), "w").close()
+            with open(os.path.join(mod.VENV, ".omatableplus-stamp"), "w") as f:
+                f.write(want + "\n")
+            active[0] -= 1
+
+        mod.build = fake_build
+        results = []
+        threads = [threading.Thread(target=lambda: results.append(mod.ensure_venv())) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        self.assertEqual(builds[0], 1)
+        self.assertEqual(overlaps, [])
+        self.assertEqual(results, [os.path.join(mod.VENV, "bin", "python")] * 4)
+
+    def test_build_and_swap_run_inside_the_lock(self):
+        import inspect
+        src = inspect.getsource(self.mod.ensure_venv)
+        self.assertLess(src.index("flock"), src.index("build(want)"))
+
+    def make_venv(self, root, marker):
+        os.makedirs(root)
+        with open(os.path.join(root, marker), "w"):
+            pass
+
+    def test_swap_replaces_the_old_install(self):
+        mod = self.mod
+        self.make_venv(mod.VENV, "old")
+        self.make_venv(mod.VENV + ".new", "new")
+        mod.swap(mod.VENV + ".new")
+        self.assertEqual(os.listdir(mod.VENV), ["new"])
+        self.assertFalse(os.path.exists(mod.VENV + ".old"))
+
+    def test_a_failed_swap_keeps_the_previous_install(self):
+        from unittest import mock
+        mod = self.mod
+        self.make_venv(mod.VENV, "old")
+        self.make_venv(mod.VENV + ".new", "new")
+        real = os.rename
+
+        def flaky(src, dst):
+            if src == mod.VENV + ".new":
+                raise OSError("disk says no")
+            return real(src, dst)
+
+        with mock.patch.object(mod.os, "rename", flaky), self.assertRaises(SystemExit):
+            mod.swap(mod.VENV + ".new")
+        self.assertEqual(os.listdir(mod.VENV), ["old"])
+
+
 class McpLauncherTest(unittest.TestCase):
     """`tablectl mcp` runs the MCP server from the drivers' venv; stdout then belongs to the MCP client."""
 

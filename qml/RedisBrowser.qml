@@ -181,6 +181,7 @@ Item {
               spacing: 4
               Ui.TextField {
                 id: patternField
+                readOnly: !activeFocus   // an unfocused field reads no clipboard
                 Layout.fillWidth: true
                 placeholderText: "Pattern, e.g. user:*"
                 font.family: "monospace"
@@ -388,6 +389,7 @@ Item {
         Layout.fillHeight: true
         TextArea {
           id: valueArea
+          readOnly: !activeFocus   // an unfocused field reads no clipboard
           selectByMouse: true
           wrapMode: TextEdit.WrapAnywhere
           color: Commons.Color.foreground

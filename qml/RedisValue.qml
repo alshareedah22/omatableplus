@@ -240,6 +240,7 @@ Item {
       Item { Layout.fillWidth: true }
       Ui.TextField {
         id: filterField
+        readOnly: !activeFocus   // an unfocused field reads no clipboard
         visible: pane.entry !== null && pane.entry.type !== "string"
         Layout.preferredWidth: 200
         placeholderText: "Filter items"
@@ -285,7 +286,8 @@ Item {
       visible: pane.entry !== null && pane.entry.type === "string"
       TextArea {
         id: stringArea
-        readOnly: !pane.entry || !pane.entry.editable || pane.isBinary(pane.entry.value)
+        readonly property bool locked: !pane.entry || !pane.entry.editable || pane.isBinary(pane.entry.value)
+        readOnly: !activeFocus || locked   // an unfocused field reads no clipboard
         selectByMouse: true
         wrapMode: TextEdit.WrapAnywhere
         color: Commons.Color.foreground
@@ -297,7 +299,7 @@ Item {
     }
     RowLayout {
       Layout.fillWidth: true
-      visible: pane.entry !== null && pane.entry.type === "string" && !stringArea.readOnly
+      visible: pane.entry !== null && pane.entry.type === "string" && !stringArea.locked
       Ui.Button { text: "Format JSON"; onClicked: pane.formatJson() }
       Item { Layout.fillWidth: true }
       Text { textFormat: Text.PlainText; visible: pane.stringDirty; text: "Unsaved"; color: Commons.Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
@@ -428,6 +430,7 @@ Item {
         Layout.fillHeight: true
         TextArea {
           id: secondArea
+          readOnly: !activeFocus   // an unfocused field reads no clipboard
           selectByMouse: true
           wrapMode: TextEdit.WrapAnywhere
           color: Commons.Color.foreground
